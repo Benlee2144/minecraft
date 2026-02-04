@@ -2,7 +2,7 @@ module.exports = {
   // API Keys
   polygon: {
     apiKey: process.env.POLYGON_API_KEY || 'AFm3DfCNME7kNNyi5W1VzWTHSwhELs2l',
-    wsUrl: 'wss://socket.polygon.io/options',
+    wsUrl: 'wss://socket.polygon.io/stocks',  // Changed to stocks for Starter plan
     restUrl: 'https://api.polygon.io'
   },
 
@@ -23,50 +23,47 @@ module.exports = {
     watchlistThreshold: 50         // Alert for watchlist tickers
   },
 
-  // Heat Score Points
+  // Heat Score Points (Stock Scanner)
   points: {
-    volume3x: 15,
-    sweepAtAsk: 20,
-    premium500k: 15,
-    premium1M: 25,
-    dte0to3: 10,
-    dte4to7: 5,
-    multipleSweeps30min: 20,
-    ivSpikeNoPrice: 15,
-    repeatActivity: 25
+    volume3x: 20,              // 3x+ volume spike
+    volume5x: 30,              // 5x+ volume spike (extreme)
+    priceUp2Pct: 15,           // Price up 2%+ with volume
+    priceUp5Pct: 25,           // Price up 5%+ with volume
+    largeBlockTrade: 20,       // Block trade > $500k
+    hugeBlockTrade: 30,        // Block trade > $1M
+    breakoutPattern: 20,       // Breaking above resistance
+    preMarketMover: 15,        // Unusual pre-market activity
+    repeatActivity: 25,        // Multiple signals in 1 hour
+    momentumSurge: 15          // Rapid price acceleration
   },
 
-  // Detection Parameters
+  // Detection Parameters (Stock Scanner)
   detection: {
     // Volume spike detection
-    volumeSpikeMultiplier: 3.0,    // 3x average volume
-    volumeWindowMinutes: 60,        // First 30-60 minutes of market
+    volumeSpikeMultiplier: 3.0,    // 3x average volume for alert
+    volumeExtremeMultiplier: 5.0,  // 5x average volume for high conviction
+    volumeWindowMinutes: 60,        // First 60 minutes of market
 
-    // Sweep detection
-    minSweepPremium: 100000,       // $100k minimum for sweeps
-    sweepTimeWindowMs: 500,         // Time window to detect split orders
+    // Block trade detection
+    minBlockValue: 500000,         // $500k minimum for block trades
+    largeBlockValue: 1000000,      // $1M for large block bonus
 
-    // Premium thresholds
-    minPremiumForAlert: 100000,    // $100k minimum premium
-    largePremiumThreshold: 500000, // $500k for bonus points
-    hugePremiumThreshold: 1000000, // $1M for max bonus points
+    // Price movement thresholds
+    minPriceChange: 0.02,          // 2% minimum price change
+    largePriceChange: 0.05,        // 5% for high conviction
 
-    // OTM detection
-    otmMinPercent: 5,              // 5% OTM minimum
-    otmMaxPercent: 10,             // 10% OTM maximum
+    // Momentum detection
+    momentumWindowSeconds: 60,     // Look for moves in 60 seconds
+    momentumThreshold: 0.01,       // 1% move in 60 seconds = momentum
 
-    // DTE ranges
-    shortDteMax: 3,                // 0-3 DTE for max points
-    mediumDteMax: 7,               // 4-7 DTE for medium points
-
-    // IV Anomaly
-    ivSpikeThreshold: 0.10,        // 10% IV spike
-    priceChangeThreshold: 0.02,    // 2% price change threshold
+    // Breakout detection
+    breakoutLookback: 20,          // 20 bars for resistance level
+    breakoutBuffer: 0.001,         // 0.1% above resistance to confirm
 
     // Repeat tracking
     repeatWindowMinutes: 60,       // 60 minute rolling window
     repeatThreshold: 3,            // 3+ signals = "heating up"
-    multipleSweepWindowMinutes: 30 // 30 min window for multiple sweeps
+    multipleSignalWindowMinutes: 30 // 30 min window for multiple signals
   },
 
   // Filters

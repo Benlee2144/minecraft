@@ -29,18 +29,33 @@ class FlowDatabase {
   }
 
   createTables() {
-    // Alerts table - stores all sent alerts for tracking win rate
+    // Stock alerts table - stores all sent stock alerts
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS stock_alerts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        signal_type TEXT NOT NULL,
+        heat_score INTEGER NOT NULL,
+        price REAL,
+        volume REAL,
+        signal_breakdown TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Legacy alerts table - stores options alerts (for backwards compatibility)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ticker TEXT NOT NULL,
-        contract TEXT NOT NULL,
+        contract TEXT,
         heat_score INTEGER NOT NULL,
-        premium REAL NOT NULL,
-        strike REAL NOT NULL,
-        spot_price REAL NOT NULL,
-        expiration TEXT NOT NULL,
-        option_type TEXT NOT NULL,
+        premium REAL,
+        strike REAL,
+        spot_price REAL,
+        expiration TEXT,
+        option_type TEXT,
         signal_breakdown TEXT NOT NULL,
         channel TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -95,6 +110,8 @@ class FlowDatabase {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_alerts_ticker ON alerts(ticker);
       CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
+      CREATE INDEX IF NOT EXISTS idx_stock_alerts_ticker ON stock_alerts(ticker);
+      CREATE INDEX IF NOT EXISTS idx_stock_alerts_created ON stock_alerts(created_at);
       CREATE INDEX IF NOT EXISTS idx_heat_history_ticker ON heat_history(ticker);
       CREATE INDEX IF NOT EXISTS idx_heat_history_created ON heat_history(created_at);
       CREATE INDEX IF NOT EXISTS idx_watchlists_user ON watchlists(user_id);
@@ -103,7 +120,38 @@ class FlowDatabase {
 
   // ========== Alert Methods ==========
 
+  // Save stock alert (new format)
   saveAlert(alert) {
+    // Check if this is a stock alert (has signalType) or options alert (has contract)
+    if (alert.signalType) {
+      return this.saveStockAlert(alert);
+    } else {
+      return this.saveOptionsAlert(alert);
+    }
+  }
+
+  // Save stock alert
+  saveStockAlert(alert) {
+    const stmt = this.db.prepare(`
+      INSERT INTO stock_alerts (ticker, signal_type, heat_score, price, volume, signal_breakdown, channel)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      alert.ticker,
+      alert.signalType,
+      alert.heatScore,
+      alert.price || null,
+      alert.volume || null,
+      JSON.stringify(alert.signalBreakdown),
+      alert.channel
+    );
+
+    return result.lastInsertRowid;
+  }
+
+  // Save options alert (legacy)
+  saveOptionsAlert(alert) {
     const stmt = this.db.prepare(`
       INSERT INTO alerts (ticker, contract, heat_score, premium, strike, spot_price,
                          expiration, option_type, signal_breakdown, channel)
@@ -112,13 +160,13 @@ class FlowDatabase {
 
     const result = stmt.run(
       alert.ticker,
-      alert.contract,
+      alert.contract || '',
       alert.heatScore,
-      alert.premium,
-      alert.strike,
-      alert.spotPrice,
-      alert.expiration,
-      alert.optionType,
+      alert.premium || 0,
+      alert.strike || 0,
+      alert.spotPrice || 0,
+      alert.expiration || '',
+      alert.optionType || '',
       JSON.stringify(alert.signalBreakdown),
       alert.channel
     );
@@ -137,7 +185,7 @@ class FlowDatabase {
 
   getTodayAlerts() {
     const stmt = this.db.prepare(`
-      SELECT * FROM alerts
+      SELECT * FROM stock_alerts
       WHERE DATE(created_at) = DATE('now')
       ORDER BY created_at DESC
     `);
@@ -307,33 +355,49 @@ class FlowDatabase {
   // ========== Stats Methods ==========
 
   getTodayStats() {
-    const stats = this.db.prepare(`
+    // Get stats from stock_alerts table
+    const stockStats = this.db.prepare(`
       SELECT
         COUNT(*) as total_alerts,
         COUNT(CASE WHEN heat_score >= 80 THEN 1 END) as high_conviction,
         COUNT(CASE WHEN heat_score >= 60 AND heat_score < 80 THEN 1 END) as standard_alerts,
         AVG(heat_score) as avg_heat_score,
-        SUM(premium) as total_premium,
+        SUM(volume) as total_volume,
         COUNT(DISTINCT ticker) as unique_tickers
-      FROM alerts
+      FROM stock_alerts
       WHERE DATE(created_at) = DATE('now')
     `).get();
 
     const topTickers = this.db.prepare(`
       SELECT ticker, COUNT(*) as alert_count, MAX(heat_score) as max_score
-      FROM alerts
+      FROM stock_alerts
       WHERE DATE(created_at) = DATE('now')
       GROUP BY ticker
       ORDER BY alert_count DESC
       LIMIT 5
     `).all();
 
-    return { ...stats, topTickers };
+    // Get signal type breakdown
+    const signalBreakdown = this.db.prepare(`
+      SELECT signal_type, COUNT(*) as count
+      FROM stock_alerts
+      WHERE DATE(created_at) = DATE('now')
+      GROUP BY signal_type
+      ORDER BY count DESC
+    `).all();
+
+    // Convert to object
+    const signalBreakdownObj = {};
+    signalBreakdown.forEach(row => {
+      signalBreakdownObj[row.signal_type] = row.count;
+    });
+
+    return { ...stockStats, topTickers, signalBreakdown: signalBreakdownObj };
   }
 
   getFlowSummary(ticker) {
-    const recent = this.db.prepare(`
-      SELECT * FROM alerts
+    const recentSignals = this.db.prepare(`
+      SELECT * FROM stock_alerts
       WHERE ticker = ?
         AND created_at >= datetime('now', '-24 hours')
       ORDER BY created_at DESC
@@ -341,14 +405,26 @@ class FlowDatabase {
     `).all(ticker.toUpperCase());
 
     const signalCount = this.getSignalCount(ticker);
-    const sweepCount = this.getSweepCount(ticker);
+    const currentHeat = this.getCurrentHeat(ticker);
+
+    // Get latest price from most recent alert
+    const latestAlert = recentSignals[0];
+    const price = latestAlert ? latestAlert.price : null;
 
     return {
       ticker: ticker.toUpperCase(),
-      recentAlerts: recent,
+      recentSignals,
       signalsLast60min: signalCount,
-      sweepsLast30min: sweepCount
+      currentHeat,
+      price
     };
+  }
+
+  // Get current heat score for a ticker based on recent signals
+  getCurrentHeat(ticker) {
+    const signalCount = this.getSignalCount(ticker, 60);
+    // Simple heat calculation based on signal count
+    return Math.min(100, signalCount * 20);
   }
 
   // ========== Cleanup ==========
