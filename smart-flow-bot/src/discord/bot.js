@@ -96,7 +96,41 @@ class DiscordBot {
     }
   }
 
-  // Send alert to appropriate channel
+  // Send stock alert to appropriate channel
+  async sendStockAlert(signal, heatResult) {
+    if (!this.isReady) {
+      // Console-only mode
+      logger.flow(heatResult.ticker, heatResult.heatScore, heatResult);
+      return;
+    }
+
+    try {
+      // Use the type-specific formatter
+      const embed = formatters.formatAlert(signal, heatResult);
+
+      // Determine channel
+      const channel = heatResult.isHighConviction
+        ? this.channels.highConviction
+        : this.channels.flowAlerts;
+
+      if (channel) {
+        await channel.send({ embeds: [embed] });
+        logger.info(`Stock alert sent to ${heatResult.channel}`, {
+          ticker: heatResult.ticker,
+          signalType: signal.type,
+          heatScore: heatResult.heatScore
+        });
+      } else {
+        // Fallback to console
+        logger.flow(heatResult.ticker, heatResult.heatScore, heatResult);
+      }
+
+    } catch (error) {
+      logger.error('Failed to send stock alert', { error: error.message });
+    }
+  }
+
+  // Legacy: Send alert to appropriate channel (for backwards compatibility)
   async sendAlert(heatResult) {
     if (!this.isReady) {
       // Console-only mode
@@ -106,7 +140,6 @@ class DiscordBot {
 
     try {
       const embed = formatters.formatFlowAlert(heatResult);
-      const textMessage = formatters.formatFlowAlertText(heatResult);
 
       // Determine channel
       const channel = heatResult.isHighConviction
@@ -123,20 +156,6 @@ class DiscordBot {
         // Fallback to console
         logger.flow(heatResult.ticker, heatResult.heatScore, heatResult);
       }
-
-      // Save alert to database
-      database.saveAlert({
-        ticker: heatResult.ticker,
-        contract: heatResult.contract,
-        heatScore: heatResult.heatScore,
-        premium: heatResult.premium,
-        strike: heatResult.strike,
-        spotPrice: heatResult.spotPrice,
-        expiration: heatResult.expiration,
-        optionType: heatResult.optionType,
-        signalBreakdown: heatResult.breakdown,
-        channel: heatResult.channel
-      });
 
     } catch (error) {
       logger.error('Failed to send alert', { error: error.message });
@@ -195,14 +214,14 @@ class DiscordBot {
   }
 
   // Send daily summary
-  async sendDailySummary(stats, outcomes) {
+  async sendDailySummary(stats) {
     if (!this.isReady || !this.channels.botStatus) {
       logger.info('Daily summary', { stats });
       return;
     }
 
     try {
-      const embed = formatters.formatDailySummary(stats, outcomes);
+      const embed = formatters.formatDailySummary(stats);
       await this.channels.botStatus.send({ embeds: [embed] });
     } catch (error) {
       logger.error('Failed to send daily summary', { error: error.message });

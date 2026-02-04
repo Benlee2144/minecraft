@@ -6,29 +6,27 @@ const marketHours = require('./utils/marketHours');
 const database = require('./database/sqlite');
 const polygonRest = require('./polygon/rest');
 const polygonWs = require('./polygon/websocket');
-const parser = require('./polygon/parser');
 
-// Detection modules
-const volumeSpike = require('./detection/volumeSpike');
-const sweepDetector = require('./detection/sweepDetector');
-const ivAnomaly = require('./detection/ivAnomaly');
-const heatScore = require('./detection/heatScore');
-const filters = require('./detection/filters');
-const outcomeTracker = require('./detection/outcomeTracker');
+// Stock Detection modules
+const stockSignals = require('./detection/stockSignals');
+const stockHeatScore = require('./detection/stockHeatScore');
 
 // Discord
 const discordBot = require('./discord/bot');
 
-class SmartFlowScanner {
+class SmartStockScanner {
   constructor() {
     this.isRunning = false;
-    this.stockPrices = new Map();
+    this.isMonitoring = false;
     this.marketCheckInterval = null;
+    this.signalBuffer = new Map(); // Buffer signals to avoid spam
+    this.lastAlertTime = new Map(); // Throttle alerts per ticker
+    this.alertCooldownMs = 30000; // 30 second cooldown per ticker
   }
 
   async start() {
     logger.info('='.repeat(50));
-    logger.info('Starting Smart Flow Scanner...');
+    logger.info('Starting Smart Stock Scanner...');
     logger.info('='.repeat(50));
 
     try {
@@ -36,18 +34,9 @@ class SmartFlowScanner {
       logger.info('Initializing database...');
       database.initialize();
 
-      // Initialize detection modules
-      logger.info('Initializing detection modules...');
-      volumeSpike.initialize();
-      sweepDetector.initialize();
-      ivAnomaly.initialize();
-      filters.initialize();
-      outcomeTracker.initialize();
-
-      // Set outcome tracker callback
-      outcomeTracker.setOutcomeCallback((alert, outcome) => {
-        discordBot.sendOutcomeUpdate(alert, outcome);
-      });
+      // Initialize stock signal detector
+      logger.info('Initializing stock signal detector...');
+      stockSignals.initialize();
 
       // Load volume baselines
       logger.info('Loading volume baselines...');
@@ -61,7 +50,7 @@ class SmartFlowScanner {
       discordBot.setStatusCallback(() => this.getStatus());
 
       // Connect to Polygon WebSocket
-      logger.info('Connecting to Polygon WebSocket...');
+      logger.info('Connecting to Polygon WebSocket (Stocks)...');
       await this.connectPolygon();
 
       // Set up event handlers
@@ -77,7 +66,7 @@ class SmartFlowScanner {
       await discordBot.sendStartupMessage(status);
 
       logger.info('='.repeat(50));
-      logger.info('Smart Flow Scanner is now running!');
+      logger.info('Smart Stock Scanner is now running!');
       logger.info(`Monitoring ${config.topTickers.length} tickers`);
       logger.info(`Market status: ${marketHours.isMarketOpen() ? 'OPEN' : 'CLOSED'}`);
       logger.info('='.repeat(50));
@@ -93,7 +82,7 @@ class SmartFlowScanner {
       }
 
     } catch (error) {
-      logger.error('Failed to start Smart Flow Scanner', { error: error.message });
+      logger.error('Failed to start Smart Stock Scanner', { error: error.message });
       await this.shutdown();
       throw error;
     }
@@ -111,16 +100,14 @@ class SmartFlowScanner {
       const baselines = await polygonRest.fetchVolumeBaselines(config.topTickers.slice(0, 100)); // Limit for API rate
 
       for (const [ticker, avgVolume] of Object.entries(baselines)) {
-        volumeSpike.setBaseline(ticker, avgVolume);
-        filters.setVolumeCache(ticker, avgVolume);
+        stockSignals.setBaseline(ticker, avgVolume);
       }
 
       logger.info(`Loaded ${Object.keys(baselines).length} volume baselines`);
     } else {
       logger.info(`Using ${existingBaselines.length} cached volume baselines`);
       for (const { ticker, avg_daily_volume } of existingBaselines) {
-        volumeSpike.setBaseline(ticker, avg_daily_volume);
-        filters.setVolumeCache(ticker, avg_daily_volume);
+        stockSignals.setBaseline(ticker, avg_daily_volume);
       }
     }
   }
@@ -147,23 +134,14 @@ class SmartFlowScanner {
   }
 
   setupEventHandlers() {
-    // Handle option trades
+    // Handle stock trades
     polygonWs.on('trade', (trade) => {
-      if (trade.type === 'option_trade') {
-        this.processOptionTrade(trade);
-      } else if (trade.type === 'stock_trade') {
+      if (trade.type === 'stock_trade') {
         this.processStockTrade(trade);
       }
     });
 
-    // Handle quotes
-    polygonWs.on('quote', (quote) => {
-      if (quote.type === 'option_quote') {
-        sweepDetector.updateQuote(quote);
-      }
-    });
-
-    // Handle aggregates
+    // Handle aggregates (minute bars)
     polygonWs.on('aggregate', (agg) => {
       this.processAggregate(agg);
     });
@@ -200,15 +178,16 @@ class SmartFlowScanner {
   startMonitoring() {
     this.isMonitoring = true;
 
-    // Subscribe to options trades for top tickers
-    logger.info('Subscribing to options flow...');
-    polygonWs.subscribeToOptionsTrades(config.topTickers.slice(0, 50)); // Limit for connection
+    // Subscribe to stock trades for top tickers
+    logger.info('Subscribing to stock trades...');
+    polygonWs.subscribeToStockTrades(config.topTickers.slice(0, 50)); // Limit for connection
 
-    // Subscribe to stock aggregates for volume tracking
+    // Subscribe to minute aggregates for volume and OHLC tracking
+    logger.info('Subscribing to minute aggregates...');
     polygonWs.subscribeToStockAggregates(config.topTickers.slice(0, 50));
 
     // Reset daily tracking
-    volumeSpike.resetDaily();
+    stockSignals.resetDaily();
     database.cleanOldHeatHistory();
 
     logger.info('Monitoring started');
@@ -219,85 +198,74 @@ class SmartFlowScanner {
 
     // Send daily summary
     const stats = database.getTodayStats();
-    const outcomes = outcomeTracker.getTodayOutcomes();
-    discordBot.sendDailySummary(stats, outcomes);
+    discordBot.sendDailySummary(stats);
 
     logger.info('Monitoring stopped for the day');
   }
 
-  async processOptionTrade(trade) {
+  processStockTrade(trade) {
     try {
-      const ticker = trade.underlyingTicker;
+      const ticker = trade.ticker;
 
-      // Get current stock price
-      const spotPrice = this.stockPrices.get(ticker) || 0;
+      // Skip if not in our monitored list
+      if (!config.topTickers.includes(ticker)) return;
 
-      // Process for sweep detection
-      const sweep = sweepDetector.processTrade(trade);
+      // Process trade through signal detector
+      const signals = stockSignals.processTrade(trade);
 
-      if (sweep) {
-        await this.evaluateSweep(sweep, spotPrice);
-      }
-
-      // Process for IV anomaly detection
-      if (spotPrice > 0) {
-        const ivAnomalyResult = ivAnomaly.processOptionTrade(trade, spotPrice);
-        if (ivAnomalyResult) {
-          logger.debug('IV anomaly detected', { ticker, ivChange: ivAnomalyResult.ivChange });
+      // Handle any generated signals
+      if (signals && signals.length > 0) {
+        for (const signal of signals) {
+          this.evaluateSignal(signal);
         }
       }
-
     } catch (error) {
-      logger.error('Error processing option trade', { error: error.message });
+      logger.error('Error processing stock trade', { error: error.message });
     }
-  }
-
-  processStockTrade(trade) {
-    this.stockPrices.set(trade.ticker, trade.price);
-    ivAnomaly.updatePrice(trade.ticker, trade.price);
   }
 
   processAggregate(agg) {
-    // Update volume tracking
-    volumeSpike.updateVolume(agg.ticker, agg.volume);
+    try {
+      const ticker = agg.ticker;
 
-    // Update stock price
-    this.stockPrices.set(agg.ticker, agg.close);
+      // Skip if not in our monitored list
+      if (!config.topTickers.includes(ticker)) return;
+
+      // Process aggregate through signal detector
+      const signals = stockSignals.processAggregate(agg);
+
+      // Handle any generated signals
+      if (signals && signals.length > 0) {
+        for (const signal of signals) {
+          this.evaluateSignal(signal);
+        }
+      }
+    } catch (error) {
+      logger.error('Error processing aggregate', { error: error.message });
+    }
   }
 
-  async evaluateSweep(sweep, spotPrice) {
-    const ticker = sweep.underlyingTicker;
+  async evaluateSignal(signal) {
+    const ticker = signal.ticker;
 
-    // Apply filters
-    const filterResult = filters.shouldFilter(sweep, {
-      spotPrice,
-      avgVolume: volumeSpike.getBaseline(ticker)
-    });
+    // Check cooldown
+    const lastAlert = this.lastAlertTime.get(ticker) || 0;
+    const timeSinceLastAlert = Date.now() - lastAlert;
 
-    if (filterResult.filtered) {
-      logger.debug(`Sweep filtered for ${ticker}`, { reasons: filterResult.reasons });
+    if (timeSinceLastAlert < this.alertCooldownMs) {
+      logger.debug(`Skipping alert for ${ticker}, cooldown active`);
       return;
     }
 
-    // Check for volume spike
-    const volumeSpikeResult = volumeSpike.detectSpike(ticker);
-    const hasVolumeSpike = volumeSpikeResult?.isSpike || false;
-
-    // Check for IV anomaly
-    const ivAnomalyResult = ivAnomaly.detectAnomaly(ticker);
-    const hasIVAnomaly = ivAnomalyResult !== null;
+    // Get context for heat score calculation
+    const context = {
+      hasVolumeSpike: signal.hasVolumeSpike || false,
+      volumeMultiple: signal.rvol || 0,
+      priceChange: signal.priceChange || 0
+    };
 
     // Calculate heat score
-    const heatResult = heatScore.calculate(sweep, {
-      spotPrice,
-      hasVolumeSpike,
-      volumeMultiple: volumeSpikeResult?.volumeMultiple || 0,
-      ivAnomaly: hasIVAnomaly,
-      ivChange: ivAnomalyResult?.ivChange || 0
-    });
-
-    // Add additional info
-    heatResult.optionTicker = sweep.optionTicker;
+    const heatResult = stockHeatScore.calculate(signal, context);
 
     // Check if meets threshold
     if (!heatResult.meetsThreshold) {
@@ -307,32 +275,36 @@ class SmartFlowScanner {
         heatResult.meetsThreshold = true;
         heatResult.channel = 'watchlist';
       } else {
-        logger.debug(`Sweep below threshold for ${ticker}`, { heatScore: heatResult.heatScore });
+        logger.debug(`Signal below threshold for ${ticker}`, {
+          heatScore: heatResult.heatScore,
+          signalType: signal.type
+        });
         return;
       }
     }
 
-    // Log and send alert
+    // Update cooldown
+    this.lastAlertTime.set(ticker, Date.now());
+
+    // Log the signal
     logger.flow(ticker, heatResult.heatScore, heatResult.breakdown);
 
-    await discordBot.sendAlert(heatResult);
+    // Send alert to Discord
+    await discordBot.sendStockAlert(signal, heatResult);
 
-    // Track for outcome
-    const alertId = await database.saveAlert({
+    // Save to database
+    database.saveAlert({
       ticker: heatResult.ticker,
-      contract: heatResult.contract,
+      signalType: signal.type,
       heatScore: heatResult.heatScore,
-      premium: heatResult.premium,
-      strike: heatResult.strike,
-      spotPrice: heatResult.spotPrice,
-      expiration: sweep.expiration,
-      optionType: sweep.optionType,
+      price: signal.price,
+      volume: signal.volume || signal.currentVolume || 0,
       signalBreakdown: heatResult.breakdown,
       channel: heatResult.channel
     });
 
-    // Start tracking outcome
-    outcomeTracker.trackAlert(alertId, heatResult, sweep.avgPrice);
+    // Add to heat history for tracking
+    database.addHeatSignal(ticker, signal.type, signal.tradeValue || signal.volume || 0);
   }
 
   getStatus() {
@@ -340,15 +312,16 @@ class SmartFlowScanner {
       polygonConnected: polygonWs.isConnected,
       polygonAuthenticated: polygonWs.isAuthenticated,
       tickersMonitored: config.topTickers.length,
-      baselinesLoaded: volumeSpike.volumeBaselines?.size || 0,
+      baselinesLoaded: stockSignals.volumeBaselines?.size || 0,
       marketOpen: marketHours.isMarketOpen(),
       isMonitoring: this.isMonitoring || false,
-      uptime: process.uptime()
+      uptime: process.uptime(),
+      dataSource: 'Stocks (Real-time)'
     };
   }
 
   async shutdown() {
-    logger.info('Shutting down Smart Flow Scanner...');
+    logger.info('Shutting down Smart Stock Scanner...');
 
     this.isRunning = false;
 
@@ -357,8 +330,7 @@ class SmartFlowScanner {
     }
 
     // Shutdown components
-    sweepDetector.shutdown();
-    outcomeTracker.shutdown();
+    stockSignals.shutdown();
     polygonWs.close();
     await discordBot.shutdown();
     database.close();
@@ -369,7 +341,7 @@ class SmartFlowScanner {
 }
 
 // Create and start the scanner
-const scanner = new SmartFlowScanner();
+const scanner = new SmartStockScanner();
 
 // Handle graceful shutdown
 process.on('SIGINT', () => scanner.shutdown());
