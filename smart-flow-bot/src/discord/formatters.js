@@ -521,14 +521,14 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
     });
 
     embed.addFields({
-      name: 'Polygon WebSocket',
+      name: 'Polygon API',
       value: status.polygonConnected ? '✅ Connected' : '❌ Disconnected',
       inline: true
     });
 
     embed.addFields({
-      name: 'Data Stream',
-      value: 'Stocks (Real-time)',
+      name: 'Data Mode',
+      value: status.dataSource || 'REST API (Polling)',
       inline: true
     });
 
@@ -550,17 +550,25 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: true
     });
 
+    // Show polling interval if using REST API
+    if (status.pollInterval) {
+      embed.addFields({
+        name: 'Poll Interval',
+        value: status.pollInterval,
+        inline: true
+      });
+    }
+
     // Detection features
     embed.addFields({
       name: '📊 Active Detectors',
       value: [
         '• Volume Spikes (RVOL)',
-        '• Block Trades',
         '• Momentum Surges',
         '• VWAP Crosses',
-        '• Breakouts',
         '• Gap Detection',
-        '• Relative Strength'
+        '• New Highs/Lows',
+        '• Top Gainers/Losers'
       ].join('\n'),
       inline: false
     });
