@@ -246,6 +246,53 @@ class PolygonRest {
     }
   }
 
+  // ========== Intraday Bars (for VWAP calculation) ==========
+
+  // Get intraday bars for VWAP calculation
+  async getIntradayBars(ticker, minuteInterval = 5, days = 1) {
+    try {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days);
+      startDate.setHours(4, 0, 0, 0); // Start from premarket
+
+      const from = startDate.toISOString().split('T')[0];
+      const to = endDate.toISOString().split('T')[0];
+
+      const data = await this.rateLimitedRequest(
+        `/v2/aggs/ticker/${ticker}/range/${minuteInterval}/minute/${from}/${to}`,
+        { adjusted: true, sort: 'asc', limit: 5000 }
+      );
+
+      return data.results || [];
+    } catch (error) {
+      logger.debug(`Failed to get intraday bars for ${ticker}: ${error.message}`);
+      return [];
+    }
+  }
+
+  // Get daily bars for previous day levels
+  async getDailyBars(ticker, days = 5) {
+    try {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - days - 5); // Extra for weekends
+
+      const from = startDate.toISOString().split('T')[0];
+      const to = endDate.toISOString().split('T')[0];
+
+      const data = await this.rateLimitedRequest(
+        `/v2/aggs/ticker/${ticker}/range/1/day/${from}/${to}`,
+        { adjusted: true, sort: 'asc', limit: 50 }
+      );
+
+      return data.results || [];
+    } catch (error) {
+      logger.debug(`Failed to get daily bars for ${ticker}: ${error.message}`);
+      return [];
+    }
+  }
+
   // ========== Batch Operations ==========
 
   // Fetch volume baselines for multiple tickers

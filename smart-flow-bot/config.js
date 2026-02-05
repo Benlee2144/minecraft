@@ -99,22 +99,29 @@ module.exports = {
     // Add tickers to ignore here
   ],
 
-  // Top day trading tickers ONLY - mega caps with best options liquidity
+  // TOP 20 DAY TRADING TICKERS ONLY - Nothing else allowed
+  // These are the stocks every pro day trader watches
   topTickers: [
-    // ETFs - most liquid
-    'SPY', 'QQQ', 'IWM',
-
-    // Mega cap tech - the main ones everyone trades
-    'AAPL', 'MSFT', 'NVDA', 'AMD', 'TSLA', 'AMZN', 'GOOGL', 'META', 'NFLX',
-
-    // Popular momentum stocks
-    'COIN', 'PLTR', 'SOFI', 'RIVN', 'NIO', 'MARA', 'RIOT',
-
-    // Financials
-    'JPM', 'BAC', 'GS',
-
-    // Other popular day trades
-    'BA', 'DIS', 'UBER', 'XOM'
+    'SPY',   // #1 S&P 500 ETF - most traded options
+    'QQQ',   // #2 Nasdaq ETF - tech heavy
+    'TSLA',  // #3 Tesla - most volatile mega cap
+    'NVDA',  // #4 Nvidia - AI leader
+    'AAPL',  // #5 Apple - most liquid
+    'AMD',   // #6 AMD - chip volatility
+    'AMZN',  // #7 Amazon
+    'META',  // #8 Meta
+    'GOOGL', // #9 Google
+    'MSFT',  // #10 Microsoft
+    'COIN',  // #11 Coinbase - crypto proxy
+    'MARA',  // #12 Marathon - crypto miner
+    'PLTR',  // #13 Palantir
+    'NFLX',  // #14 Netflix
+    'BA',    // #15 Boeing - big mover
+    'JPM',   // #16 JP Morgan
+    'IWM',   // #17 Russell 2000 ETF
+    'SOFI',  // #18 SoFi
+    'XOM',   // #19 Exxon
+    'RIVN'   // #20 Rivian
   ],
 
   // Database
