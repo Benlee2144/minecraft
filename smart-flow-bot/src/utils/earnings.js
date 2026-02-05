@@ -1,5 +1,6 @@
 const database = require('../database/sqlite');
 const logger = require('../utils/logger');
+const axios = require('axios');
 
 class EarningsCalendar {
   constructor() {
@@ -7,6 +8,8 @@ class EarningsCalendar {
     // Format: { TICKER: 'YYYY-MM-DD' }
     this.knownEarnings = {};
     this.warningDays = 3; // Warn if earnings within X days
+    this.lastFetchTime = null;
+    this.fetchCooldownHours = 6; // Only fetch every 6 hours
   }
 
   initialize() {
@@ -50,6 +53,110 @@ class EarningsCalendar {
     } catch (error) {
       logger.error('Error removing earnings date', { error: error.message });
     }
+  }
+
+  // Fetch earnings date for a single ticker
+  // Tries Yahoo Finance with multiple endpoints and fallbacks
+  async fetchEarningsForTicker(ticker) {
+    ticker = ticker.toUpperCase();
+
+    // Try Yahoo Finance endpoints (they change frequently)
+    const yahooEndpoints = [
+      `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=calendarEvents`,
+      `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=calendarEvents`
+    ];
+
+    for (const url of yahooEndpoints) {
+      try {
+        const response = await axios.get(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9'
+          },
+          timeout: 8000
+        });
+
+        const data = response.data;
+        const calendarEvents = data?.quoteSummary?.result?.[0]?.calendarEvents;
+
+        if (calendarEvents?.earnings?.earningsDate) {
+          const earningsDateArray = calendarEvents.earnings.earningsDate;
+          if (earningsDateArray.length > 0) {
+            const epochSeconds = earningsDateArray[0].raw;
+            const earningsDate = new Date(epochSeconds * 1000);
+            const dateStr = earningsDate.toISOString().split('T')[0];
+
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            if (earningsDate >= today) {
+              this.setEarningsDate(ticker, dateStr);
+              return { ticker, date: dateStr, source: 'yahoo' };
+            }
+          }
+        }
+      } catch (error) {
+        // Try next endpoint silently
+        continue;
+      }
+    }
+
+    // Log only once after all attempts failed
+    logger.debug(`Could not fetch earnings for ${ticker}`);
+    return null;
+  }
+
+  // Fetch earnings for multiple tickers
+  async fetchEarningsForTickers(tickers) {
+    // Check cooldown
+    if (this.lastFetchTime) {
+      const hoursSinceFetch = (Date.now() - this.lastFetchTime) / (1000 * 60 * 60);
+      if (hoursSinceFetch < this.fetchCooldownHours) {
+        logger.debug(`Skipping earnings fetch - last fetch was ${hoursSinceFetch.toFixed(1)} hours ago`);
+        return { fetched: 0, skipped: tickers.length };
+      }
+    }
+
+    logger.info(`Fetching earnings for ${tickers.length} tickers...`);
+
+    let fetched = 0;
+    let failed = 0;
+
+    for (const ticker of tickers) {
+      try {
+        const result = await this.fetchEarningsForTicker(ticker);
+        if (result) {
+          fetched++;
+          logger.debug(`Found earnings for ${ticker}: ${result.date}`);
+        }
+        // Small delay to avoid rate limiting
+        await new Promise(r => setTimeout(r, 200));
+      } catch (error) {
+        failed++;
+      }
+    }
+
+    this.lastFetchTime = Date.now();
+    logger.info(`Fetched earnings: ${fetched} found, ${failed} failed, ${tickers.length - fetched - failed} no data`);
+
+    return { fetched, failed };
+  }
+
+  // Auto-fetch earnings for watchlist and top tickers
+  async autoFetchEarnings(topTickers = []) {
+    // Combine top tickers with any manually tracked
+    const tickersToFetch = [...new Set([
+      ...topTickers.slice(0, 50), // Limit to 50 to avoid too many requests
+      ...Object.keys(this.knownEarnings)
+    ])];
+
+    if (tickersToFetch.length === 0) {
+      logger.debug('No tickers to fetch earnings for');
+      return;
+    }
+
+    return this.fetchEarningsForTickers(tickersToFetch);
   }
 
   // Check if ticker has earnings coming up
@@ -125,10 +232,34 @@ class EarningsCalendar {
     return upcoming;
   }
 
+  // Get total count of tracked earnings
+  getCount() {
+    return Object.keys(this.knownEarnings).length;
+  }
+
   // Bulk set earnings dates (for populating)
   bulkSetEarnings(earningsData) {
     for (const [ticker, date] of Object.entries(earningsData)) {
       this.setEarningsDate(ticker, date);
+    }
+  }
+
+  // Clean up past earnings
+  cleanPastEarnings() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let removed = 0;
+    for (const [ticker, dateStr] of Object.entries(this.knownEarnings)) {
+      const earningsDate = new Date(dateStr);
+      if (earningsDate < today) {
+        this.removeEarningsDate(ticker);
+        removed++;
+      }
+    }
+
+    if (removed > 0) {
+      logger.info(`Cleaned up ${removed} past earnings dates`);
     }
   }
 }

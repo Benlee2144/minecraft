@@ -145,6 +145,11 @@ class DiscordCommands {
         subcommand
           .setName('upcoming')
           .setDescription('Show all upcoming earnings this week')
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('fetch')
+          .setDescription('Auto-fetch earnings from Yahoo Finance for top tickers')
       );
 
     // /risk command (position size calculator)
@@ -654,7 +659,7 @@ class DiscordCommands {
 
         if (upcoming.length === 0) {
           await interaction.reply({
-            content: 'No upcoming earnings in the calendar this week.\nAdd earnings dates with `/earnings set TICKER YYYY-MM-DD`',
+            content: 'No upcoming earnings in the calendar this week.\nUse `/earnings fetch` to auto-fetch from Yahoo Finance, or add manually with `/earnings set TICKER YYYY-MM-DD`',
             ephemeral: true
           });
           return;
@@ -673,9 +678,54 @@ class DiscordCommands {
         }).join('\n');
 
         embed.setDescription(earningsText);
-        embed.setFooter({ text: 'Add more with /earnings set TICKER YYYY-MM-DD' });
+        embed.setFooter({ text: 'Use /earnings fetch to update from Yahoo Finance' });
 
         await interaction.reply({ embeds: [embed], ephemeral: true });
+        break;
+      }
+
+      case 'fetch': {
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+          // Get top tickers from config
+          const config = require('../../config');
+          const topTickers = config.topTickers || [];
+
+          const result = await earningsCalendar.autoFetchEarnings(topTickers);
+
+          const { EmbedBuilder } = require('discord.js');
+          const embed = new EmbedBuilder()
+            .setTitle('📅 Earnings Fetch Complete')
+            .setColor(0x2ECC71)
+            .setTimestamp();
+
+          embed.addFields(
+            { name: '✅ Found', value: `${result.fetched} earnings dates`, inline: true },
+            { name: '📊 Total Tracked', value: `${earningsCalendar.getCount()} tickers`, inline: true }
+          );
+
+          // Show upcoming
+          const upcoming = earningsCalendar.getUpcomingEarnings(7);
+          if (upcoming.length > 0) {
+            const upcomingText = upcoming.slice(0, 10).map(e => {
+              if (e.daysAway === 0) return `🔴 **${e.ticker}** - TODAY`;
+              if (e.daysAway === 1) return `🟠 **${e.ticker}** - Tomorrow`;
+              return `🟡 **${e.ticker}** - ${e.date}`;
+            }).join('\n');
+
+            embed.addFields({
+              name: '📆 Upcoming This Week',
+              value: upcomingText,
+              inline: false
+            });
+          }
+
+          await interaction.editReply({ embeds: [embed] });
+        } catch (error) {
+          logger.error('Error fetching earnings', { error: error.message });
+          await interaction.editReply('Error fetching earnings data. Try again later.');
+        }
         break;
       }
     }

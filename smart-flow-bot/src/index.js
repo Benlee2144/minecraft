@@ -46,6 +46,13 @@ class SmartStockScanner {
 
       // Initialize earnings calendar
       earningsCalendar.initialize();
+      earningsCalendar.cleanPastEarnings();
+
+      // Auto-fetch earnings from Yahoo Finance (runs in background)
+      logger.info('Fetching earnings calendar from Yahoo Finance...');
+      earningsCalendar.autoFetchEarnings(config.topTickers).catch(err => {
+        logger.warn('Could not auto-fetch earnings', { error: err.message });
+      });
 
       // Load volume baselines
       logger.info('Loading volume baselines...');
