@@ -18,15 +18,20 @@ class PaperTrading {
     // Position sizing
     this.POSITION_SIZE = 2000; // $2000 per trade
 
-    // Option leverage estimate (slightly OTM options move ~3.5x underlying)
-    this.OPTION_LEVERAGE = 3.5;
+    // Option leverage estimate (ATM options move ~4x underlying for scalps)
+    this.OPTION_LEVERAGE = 4.0;
+
+    // AGGRESSIVE DAY TRADING SETTINGS
+    this.MAX_ACTIVE_TRADES = 5;  // Can hold up to 5 positions at once
+    this.MIN_TRADES_PER_DAY = 15; // Target minimum trades per day
+    this.MAX_TRADES_PER_DAY = 50; // Don't overtrade
 
     // Alert thresholds for proximity warnings
     this.PARTIAL_PROFIT_THRESHOLD = 0.6; // Alert when 60% of the way to partial target
     this.TARGET_PROXIMITY_THRESHOLD = 0.8; // Alert when 80% of the way to target
     this.STOP_PROXIMITY_THRESHOLD = 0.7; // Alert when 70% of the way to stop
 
-    // Risk management (disabled for full tracking - set high limits)
+    // Risk management (aggressive but not reckless)
     this.MAX_DAILY_LOSS = 999999; // No daily loss limit - track everything
     this.MAX_CONSECUTIVE_LOSSES = 999; // No consecutive loss limit - keep trading
     this.consecutiveLosses = 0;
@@ -681,12 +686,99 @@ class PaperTrading {
     lines.push('\n**💵 IF THIS WERE REAL:**');
     const startingCapital = summary.total_trades * this.POSITION_SIZE;
     const endingCapital = startingCapital + totalPnl;
-    const returnPct = (totalPnl / startingCapital) * 100;
+    const returnPct = startingCapital > 0 ? (totalPnl / startingCapital) * 100 : 0;
     lines.push(`Starting capital: $${startingCapital.toLocaleString()}`);
     lines.push(`Ending capital: $${endingCapital.toLocaleString()}`);
     lines.push(`Return: ${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(2)}%`);
 
+    // DETAILED TRADE-BY-TRADE BREAKDOWN
+    if (summary.allTrades && summary.allTrades.length > 0) {
+      lines.push('\n' + '─'.repeat(40));
+      lines.push('📋 **ALL TRADES TODAY:**');
+      lines.push('─'.repeat(40));
+
+      // Sort by time (most recent first)
+      const sortedTrades = [...summary.allTrades].sort((a, b) =>
+        new Date(b.created_at) - new Date(a.created_at)
+      );
+
+      for (const trade of sortedTrades.slice(0, 20)) { // Show last 20
+        const pnlEmoji = (trade.pnl_dollars || 0) >= 0 ? '✅' : '❌';
+        const dirEmoji = trade.direction === 'BULLISH' ? '🟢' : '🔴';
+        const pnl = trade.pnl_dollars || 0;
+        const optPnl = trade.option_pnl_percent || 0;
+        const status = trade.status === 'OPEN' ? '⏳ OPEN' : trade.exit_reason || 'CLOSED';
+
+        const time = new Date(trade.created_at).toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+        });
+
+        if (trade.status === 'CLOSED') {
+          lines.push(`${pnlEmoji} **${trade.ticker}** ${dirEmoji} | ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)} (${optPnl >= 0 ? '+' : ''}${optPnl.toFixed(0)}%) | ${status}`);
+          lines.push(`   ${time} | Entry: $${trade.entry_price?.toFixed(2)} → Exit: $${trade.exit_price?.toFixed(2)} | Conf: ${trade.confidence_score}`);
+        } else {
+          lines.push(`⏳ **${trade.ticker}** ${dirEmoji} | OPEN`);
+          lines.push(`   ${time} | Entry: $${trade.entry_price?.toFixed(2)} | Target: $${trade.target_price?.toFixed(2)} | Conf: ${trade.confidence_score}`);
+        }
+      }
+
+      if (sortedTrades.length > 20) {
+        lines.push(`\n... and ${sortedTrades.length - 20} more trades`);
+      }
+    }
+
+    // PERFORMANCE METRICS
+    lines.push('\n' + '─'.repeat(40));
+    lines.push('📊 **PERFORMANCE METRICS:**');
+
+    // Calculate additional stats
+    if (summary.allTrades && summary.allTrades.length > 0) {
+      const closedTrades = summary.allTrades.filter(t => t.status === 'CLOSED');
+      if (closedTrades.length > 0) {
+        // Average hold time (rough estimate)
+        const avgConfidence = closedTrades.reduce((sum, t) => sum + (t.confidence_score || 0), 0) / closedTrades.length;
+
+        // Win streak / Loss streak
+        let currentStreak = 0;
+        let streakType = null;
+        let maxWinStreak = 0;
+        let maxLossStreak = 0;
+
+        for (const trade of closedTrades) {
+          const isWin = (trade.pnl_dollars || 0) > 0;
+          if (streakType === null) {
+            streakType = isWin;
+            currentStreak = 1;
+          } else if (isWin === streakType) {
+            currentStreak++;
+          } else {
+            if (streakType) maxWinStreak = Math.max(maxWinStreak, currentStreak);
+            else maxLossStreak = Math.max(maxLossStreak, currentStreak);
+            streakType = isWin;
+            currentStreak = 1;
+          }
+        }
+        // Final streak
+        if (streakType) maxWinStreak = Math.max(maxWinStreak, currentStreak);
+        else maxLossStreak = Math.max(maxLossStreak, currentStreak);
+
+        lines.push(`📈 Average Confidence: ${avgConfidence.toFixed(0)}/100`);
+        lines.push(`🔥 Max Win Streak: ${maxWinStreak}`);
+        lines.push(`❄️ Max Loss Streak: ${maxLossStreak}`);
+
+        // Profit factor
+        const totalWins = closedTrades.filter(t => (t.pnl_dollars || 0) > 0).reduce((sum, t) => sum + t.pnl_dollars, 0);
+        const totalLosses = Math.abs(closedTrades.filter(t => (t.pnl_dollars || 0) < 0).reduce((sum, t) => sum + t.pnl_dollars, 0));
+        const profitFactor = totalLosses > 0 ? (totalWins / totalLosses).toFixed(2) : '∞';
+        lines.push(`📊 Profit Factor: ${profitFactor}`);
+      }
+    }
+
     lines.push('\n' + '═'.repeat(45));
+    lines.push('*Smart Flow Scanner - Paper Trading Mode*');
+    lines.push('═'.repeat(45));
 
     return lines.join('\n');
   }
@@ -718,11 +810,25 @@ class PaperTrading {
 
   // Check if should open trade (includes risk management)
   shouldOpenTrade(ticker, direction) {
-    // Check for duplicate position
+    // Check for duplicate position (same ticker AND direction only)
     for (const trade of this.activeTrades.values()) {
       if (trade.ticker === ticker && trade.direction === direction) {
+        logger.debug(`Already have ${direction} position in ${ticker}`);
         return false;
       }
+    }
+
+    // Check max active trades (aggressive but controlled)
+    if (this.activeTrades.size >= this.MAX_ACTIVE_TRADES) {
+      logger.info(`Max active trades reached (${this.MAX_ACTIVE_TRADES}) - waiting for exit`);
+      return false;
+    }
+
+    // Check max daily trades
+    const todayCount = this.getTodayTradeCount();
+    if (todayCount >= this.MAX_TRADES_PER_DAY) {
+      logger.info(`Max daily trades reached (${this.MAX_TRADES_PER_DAY})`);
+      return false;
     }
 
     // Check daily loss limit

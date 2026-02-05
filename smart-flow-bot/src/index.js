@@ -28,6 +28,7 @@ const winRateTracker = require('./detection/winRateTracker');
 const orderFlowImbalance = require('./detection/orderFlowImbalance');
 const greeksCalculator = require('./detection/greeksCalculator');
 const blockTradeDetector = require('./detection/blockTradeDetector');
+const vwapTracker = require('./detection/vwapTracker');
 
 // Data modules
 const earningsCalendar = require('./utils/earnings');
@@ -1082,6 +1083,20 @@ class SmartStockScanner {
 
     // Generate trade recommendation (wrapped in try-catch so alerts still send if this fails)
     try {
+      // Get VWAP analysis for pro trader context
+      let vwapData = null;
+      try {
+        vwapData = await vwapTracker.getVWAPAnalysis(ticker);
+      } catch (vwapErr) {
+        logger.debug(`VWAP analysis not available for ${ticker}`);
+      }
+
+      // Add VWAP to breakdown for recommendation engine
+      const enrichedBreakdown = {
+        ...heatResult.breakdown,
+        vwap: vwapData
+      };
+
       const recommendation = tradeRecommendation.generateRecommendation({
         ticker,
         price: signal.price,
@@ -1089,7 +1104,7 @@ class SmartStockScanner {
         signalType: signal.type,
         volumeMultiplier: signal.rvol || context.volumeMultiple || 1,
         priceChange: signal.priceChange || signal.todayChangePercent || 0,
-        signalBreakdown: heatResult.breakdown
+        signalBreakdown: enrichedBreakdown
       });
 
       // Add recommendation to heat result for display
