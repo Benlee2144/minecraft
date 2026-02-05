@@ -121,7 +121,7 @@ class ClaudeChat {
   // Run claude command with timeout (no shell)
   runClaudeCommand(prompt) {
     return new Promise((resolve) => {
-      const timeout = 60000; // 60 second timeout
+      const timeout = 120000; // 120 second timeout (Claude can be slow)
 
       // Use claude with -p (print) flag for single response
       // Pass prompt as argument directly - no shell escaping needed
@@ -141,7 +141,7 @@ class ClaudeChat {
           resolve({
             success: false,
             output: '',
-            error: 'Request timed out after 60 seconds'
+            error: 'Request timed out after 120 seconds. Claude CLI may be busy or not authenticated. Try: claude /login'
           });
         }
       }, timeout);
@@ -182,29 +182,8 @@ class ClaudeChat {
 
   // Build prompt with trading context
   buildPrompt(message, context = {}) {
-    let prompt = `You are a trading assistant in a Discord server. Keep responses concise under 1800 characters for Discord.
-
-Guidelines:
-- Help with trading concepts, market mechanics, and signal interpretation
-- Never give specific buy or sell advice or price targets
-- Always remind users that trading involves risk
-- Be educational and clear`;
-
-    // Add market context if available
-    if (context.marketStatus) {
-      prompt += `\n\nCurrent market status: ${context.marketStatus}`;
-    }
-
-    if (context.recentAlerts && context.recentAlerts.length > 0) {
-      prompt += `\n\nRecent scanner alerts:`;
-      context.recentAlerts.slice(0, 3).forEach(alert => {
-        prompt += `\n- ${alert.ticker}: ${alert.signal_type} Heat ${alert.heat_score}`;
-      });
-    }
-
-    prompt += `\n\nUser question: ${message}`;
-
-    return prompt;
+    // Keep prompt simple and short for faster response
+    return `Trading assistant - keep response under 1500 chars. Question: ${message}`;
   }
 
   // Quick question (same as chat for CLI version)
