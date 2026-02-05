@@ -11,6 +11,7 @@ const keyLevels = require('../detection/keyLevels');
 const spyCorrelation = require('../detection/spyCorrelation');
 const sectorHeatMap = require('../detection/sectorHeatMap');
 const marketHours = require('../utils/marketHours');
+const paperTrading = require('../utils/paperTrading');
 
 class DiscordCommands {
   constructor() {
@@ -202,6 +203,37 @@ class DiscordCommands {
       .setName('spy')
       .setDescription('Show current SPY status and market direction');
 
+    // /paper command (paper trading)
+    const paperCommand = new SlashCommandBuilder()
+      .setName('paper')
+      .setDescription('Paper trading - track hypothetical trades')
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('active')
+          .setDescription('Show all active paper trades')
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('today')
+          .setDescription("Show today's paper trades (open and closed)")
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('history')
+          .setDescription('Show paper trading performance history')
+          .addIntegerOption(option =>
+            option
+              .setName('days')
+              .setDescription('Number of days to show (default 7)')
+              .setRequired(false)
+          )
+      );
+
+    // /recap command (end of day recap)
+    const recapCommand = new SlashCommandBuilder()
+      .setName('recap')
+      .setDescription("Get today's paper trading recap and performance summary");
+
     this.commands = [
       watchlistCommand,
       flowCommand,
@@ -216,7 +248,9 @@ class DiscordCommands {
       riskCommand,
       sectorsCommand,
       levelsCommand,
-      spyCommand
+      spyCommand,
+      paperCommand,
+      recapCommand
     ];
   }
 
@@ -297,6 +331,12 @@ class DiscordCommands {
           break;
         case 'spy':
           await this.handleSpy(interaction);
+          break;
+        case 'paper':
+          await this.handlePaper(interaction);
+          break;
+        case 'recap':
+          await this.handleRecap(interaction);
           break;
         default:
           await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -1027,6 +1067,153 @@ class DiscordCommands {
     } catch (error) {
       logger.error('Error handling /spy command', { error: error.message });
       await interaction.editReply('Error fetching SPY data.');
+    }
+  }
+
+  // Handle /paper command (paper trading)
+  async handlePaper(interaction) {
+    const subcommand = interaction.options.getSubcommand();
+
+    switch (subcommand) {
+      case 'active': {
+        const trades = paperTrading.getActiveTrades();
+        const embed = formatters.formatActivePaperTrades(trades);
+
+        if (typeof embed === 'string') {
+          await interaction.reply({ content: embed, ephemeral: true });
+        } else {
+          await interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+        break;
+      }
+
+      case 'today': {
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+          const trades = paperTrading.getTodayTrades();
+          const { EmbedBuilder } = require('discord.js');
+
+          if (trades.length === 0) {
+            await interaction.editReply("No paper trades today yet. The bot will automatically open paper trades when it generates recommendations with confidence >= 70.");
+            return;
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle(`📊 Today's Paper Trades (${trades.length})`)
+            .setColor(0x3498DB)
+            .setTimestamp();
+
+          let description = '';
+          for (const trade of trades.slice(0, 15)) {
+            const emoji = trade.direction === 'BULLISH' ? '🟢' : '🔴';
+            const statusEmoji = trade.status === 'OPEN' ? '⏳' :
+                               (trade.pnl_percent > 0 ? '✅' : '❌');
+
+            description += `${emoji} **${trade.ticker}** ${statusEmoji}\n`;
+            description += `   ${trade.recommendation} | Confidence: ${trade.confidence_score}\n`;
+
+            if (trade.status === 'CLOSED') {
+              const pnl = trade.pnl_percent || 0;
+              description += `   P&L: ${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}% | ${trade.exit_reason}\n`;
+            } else {
+              description += `   Entry: $${trade.entry_price.toFixed(2)} | Target: $${trade.target_price.toFixed(2)}\n`;
+            }
+            description += '\n';
+          }
+
+          embed.setDescription(description);
+
+          // Summary stats
+          const openCount = trades.filter(t => t.status === 'OPEN').length;
+          const closedCount = trades.filter(t => t.status === 'CLOSED').length;
+          const winners = trades.filter(t => t.status === 'CLOSED' && t.pnl_percent > 0).length;
+
+          embed.setFooter({
+            text: `Open: ${openCount} | Closed: ${closedCount} | Winners: ${winners}/${closedCount} | ${marketHours.formatTimeET()} ET`
+          });
+
+          await interaction.editReply({ embeds: [embed] });
+        } catch (error) {
+          logger.error('Error handling /paper today', { error: error.message });
+          await interaction.editReply('Error fetching paper trades.');
+        }
+        break;
+      }
+
+      case 'history': {
+        await interaction.deferReply({ ephemeral: true });
+
+        try {
+          const days = interaction.options.getInteger('days') || 7;
+          const history = paperTrading.getHistoricalPerformance(days);
+
+          if (history.length === 0) {
+            await interaction.editReply("No paper trading history yet. Paper trades will be recorded when the bot runs during market hours.");
+            return;
+          }
+
+          const { EmbedBuilder } = require('discord.js');
+          const embed = new EmbedBuilder()
+            .setTitle(`📈 Paper Trading History (${days} days)`)
+            .setColor(0x9B59B6)
+            .setTimestamp();
+
+          let totalPnL = 0;
+          let totalTrades = 0;
+          let totalWins = 0;
+
+          let historyText = '';
+          for (const day of history) {
+            const winRate = (day.winners + day.losers) > 0
+              ? ((day.winners / (day.winners + day.losers)) * 100).toFixed(0)
+              : 0;
+            const emoji = day.total_pnl_dollars >= 0 ? '🟢' : '🔴';
+
+            historyText += `${emoji} **${day.trade_date}**: ${day.total_trades} trades, ${winRate}% win, $${(day.total_pnl_dollars || 0).toFixed(2)}\n`;
+
+            totalPnL += day.total_pnl_dollars || 0;
+            totalTrades += day.total_trades;
+            totalWins += day.winners;
+          }
+
+          embed.setDescription(historyText);
+
+          // Overall stats
+          const overallWinRate = totalTrades > 0
+            ? ((totalWins / totalTrades) * 100).toFixed(1)
+            : 0;
+
+          embed.addFields({
+            name: '📊 Period Summary',
+            value: `Total Trades: **${totalTrades}**\n` +
+                   `Win Rate: **${overallWinRate}%**\n` +
+                   `Total P&L: **$${totalPnL.toFixed(2)}**`,
+            inline: false
+          });
+
+          await interaction.editReply({ embeds: [embed] });
+        } catch (error) {
+          logger.error('Error handling /paper history', { error: error.message });
+          await interaction.editReply('Error fetching paper trading history.');
+        }
+        break;
+      }
+    }
+  }
+
+  // Handle /recap command (end of day recap)
+  async handleRecap(interaction) {
+    await interaction.deferReply();
+
+    try {
+      const summary = paperTrading.getTodaySummary();
+      const embed = formatters.formatPaperRecap(summary);
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /recap command', { error: error.message });
+      await interaction.editReply('Error generating recap.');
     }
   }
 }

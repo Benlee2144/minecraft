@@ -128,6 +128,33 @@ class FlowDatabase {
       )
     `);
 
+    // Paper trades table for backtesting
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS paper_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        target_price REAL NOT NULL,
+        stop_price REAL NOT NULL,
+        option_type TEXT,
+        option_strike REAL,
+        option_expiry TEXT,
+        confidence_score INTEGER NOT NULL,
+        recommendation TEXT NOT NULL,
+        factors TEXT,
+        warnings TEXT,
+        status TEXT DEFAULT 'OPEN',
+        exit_price REAL,
+        exit_reason TEXT,
+        pnl_percent REAL,
+        pnl_dollars REAL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        closed_at DATETIME,
+        trade_date TEXT DEFAULT (DATE('now'))
+      )
+    `);
+
     // Create indexes for performance
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_alerts_ticker ON alerts(ticker);
@@ -137,6 +164,9 @@ class FlowDatabase {
       CREATE INDEX IF NOT EXISTS idx_heat_history_ticker ON heat_history(ticker);
       CREATE INDEX IF NOT EXISTS idx_heat_history_created ON heat_history(created_at);
       CREATE INDEX IF NOT EXISTS idx_watchlists_user ON watchlists(user_id);
+      CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status);
+      CREATE INDEX IF NOT EXISTS idx_paper_trades_date ON paper_trades(trade_date);
+      CREATE INDEX IF NOT EXISTS idx_paper_trades_ticker ON paper_trades(ticker);
     `);
   }
 

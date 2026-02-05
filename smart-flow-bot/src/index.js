@@ -11,9 +11,11 @@ const stockHeatScore = require('./detection/stockHeatScore');
 const keyLevels = require('./detection/keyLevels');
 const spyCorrelation = require('./detection/spyCorrelation');
 const sectorHeatMap = require('./detection/sectorHeatMap');
+const tradeRecommendation = require('./detection/tradeRecommendation');
 
 // Data modules
 const earningsCalendar = require('./utils/earnings');
+const paperTrading = require('./utils/paperTrading');
 
 // Discord
 const discordBot = require('./discord/bot');
@@ -47,6 +49,10 @@ class SmartStockScanner {
       // Initialize earnings calendar
       earningsCalendar.initialize();
       earningsCalendar.cleanPastEarnings();
+
+      // Initialize paper trading system
+      logger.info('Initializing paper trading system...');
+      paperTrading.initialize();
 
       // Auto-fetch earnings from Yahoo Finance (runs in background)
       logger.info('Fetching earnings calendar from Yahoo Finance...');
@@ -226,7 +232,7 @@ class SmartStockScanner {
     }, this.sectorUpdateIntervalMs);
   }
 
-  stopMonitoring() {
+  async stopMonitoring() {
     this.isMonitoring = false;
 
     // Stop polling
@@ -241,9 +247,21 @@ class SmartStockScanner {
       this.sectorUpdateInterval = null;
     }
 
+    // Close all open paper trades at market close
+    logger.info('Closing all open paper trades at market close...');
+    const closedTrades = await paperTrading.closeAllAtMarketClose();
+    logger.info(`Closed ${closedTrades.length} paper trades at market close`);
+
+    // Send paper trading daily recap
+    const paperRecap = paperTrading.formatRecapForDiscord();
+    await discordBot.sendMessage('flowAlerts', paperRecap);
+
     // Send daily summary
     const stats = database.getTodayStats();
     discordBot.sendDailySummary(stats);
+
+    // Reset paper trading for next day
+    paperTrading.resetDailyTracking();
 
     logger.info('Monitoring stopped for the day');
   }
@@ -300,6 +318,9 @@ class SmartStockScanner {
         }
         await this.sleep(100); // Small delay between requests
       }
+
+      // Check paper trades against current prices
+      await this.checkPaperTrades();
 
       logger.debug('Polling cycle complete');
 
@@ -597,6 +618,34 @@ class SmartStockScanner {
     // Log the signal
     logger.flow(ticker, heatResult.heatScore, heatResult.breakdown);
 
+    // Generate trade recommendation
+    const recommendation = tradeRecommendation.generateRecommendation({
+      ticker,
+      price: signal.price,
+      heatScore: heatResult.heatScore,
+      signalType: signal.type,
+      volumeMultiplier: signal.rvol || context.volumeMultiple || 1,
+      priceChange: signal.priceChange || signal.todayChangePercent || 0,
+      signalBreakdown: heatResult.breakdown
+    });
+
+    // Add recommendation to heat result for display
+    heatResult.recommendation = recommendation;
+
+    // Open paper trade if recommendation is actionable
+    if (recommendation.confidenceScore >= 70 &&
+        recommendation.recommendation.action !== 'WATCH' &&
+        recommendation.recommendation.action !== 'AVOID') {
+      // Check if we should open this trade
+      if (paperTrading.shouldOpenTrade(ticker, recommendation.direction)) {
+        const tradeId = paperTrading.openTrade(recommendation);
+        if (tradeId) {
+          heatResult.paperTradeId = tradeId;
+          logger.info(`Opened paper trade #${tradeId} for ${ticker}`);
+        }
+      }
+    }
+
     // Send alert to Discord
     await discordBot.sendStockAlert(signal, heatResult);
 
@@ -615,9 +664,42 @@ class SmartStockScanner {
     database.addHeatSignal(ticker, signal.type, signal.currentVolume || 0);
   }
 
+  // Check paper trades against current prices
+  async checkPaperTrades() {
+    const activeTrades = paperTrading.getActiveTrades();
+    if (activeTrades.length === 0) return;
+
+    // Build price map from our snapshots
+    const prices = {};
+    for (const [ticker, snapshot] of this.lastSnapshots) {
+      if (snapshot.price) {
+        prices[ticker] = snapshot.price;
+      }
+    }
+
+    // Check for closed trades
+    const closedTrades = await paperTrading.checkActiveTrades(prices);
+
+    // Notify about closed trades
+    for (const trade of closedTrades) {
+      const emoji = trade.pnlPercent > 0 ? '✅' : '❌';
+      const result = trade.exitReason === 'TARGET_HIT' ? 'Target Hit!' :
+                     trade.exitReason === 'STOP_LOSS' ? 'Stopped Out' : 'Market Close';
+
+      const message = `${emoji} **Paper Trade Closed** - ${trade.ticker}\n` +
+                     `Result: ${result}\n` +
+                     `P&L: ${trade.pnlPercent > 0 ? '+' : ''}${trade.pnlPercent.toFixed(2)}% ($${trade.pnlDollars.toFixed(2)})`;
+
+      await discordBot.sendMessage('flowAlerts', message);
+      logger.info(`Paper trade closed: ${trade.ticker} ${trade.exitReason} ${trade.pnlPercent.toFixed(2)}%`);
+    }
+  }
+
   getStatus() {
     const phase = marketHours.getTradingPhase();
     const spyData = spyCorrelation.getSPYContext();
+    const activePaperTrades = paperTrading.getActiveTrades();
+    const todayPaperCount = paperTrading.getTodayTradeCount();
 
     return {
       polygonConnected: true, // REST API is stateless
@@ -635,6 +717,10 @@ class SmartStockScanner {
       heatBonus: phase.heatBonus || 0,
       spyDirection: spyData.available ? spyData.direction : 'unknown',
       spyChange: spyData.available ? spyData.change : null,
+      paperTrades: {
+        active: activePaperTrades.length,
+        todayTotal: todayPaperCount
+      },
       marketStatus: {
         phase: phase.phase,
         description: phase.description,

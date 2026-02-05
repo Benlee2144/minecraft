@@ -746,6 +746,17 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
 
   // Helper: Add final fields to alert embed (chart, earnings, footer)
   finalizeAlertEmbed(embed, ticker, heatResult = {}) {
+    // Add trade recommendation if present
+    if (heatResult.recommendation) {
+      const rec = heatResult.recommendation;
+      const recEmbed = this.formatRecommendationField(rec);
+      embed.addFields({
+        name: `${rec.recommendation.emoji} Bot's Trade Idea`,
+        value: recEmbed,
+        inline: false
+      });
+    }
+
     // Add market context (SPY + Sector) on one line
     const contextParts = [];
 
@@ -819,6 +830,160 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
     // Set footer with time
     embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
 
+    return embed;
+  }
+
+  // Format trade recommendation for embed field
+  formatRecommendationField(rec) {
+    const lines = [];
+
+    // Action line
+    lines.push(`**${rec.recommendation.action}** (${rec.confidenceScore}/100 confidence)`);
+
+    // Option suggestion
+    if (rec.optionSuggestion) {
+      lines.push(`Option: **${rec.optionSuggestion.strike} ${rec.optionSuggestion.type}** exp ${rec.optionSuggestion.expiration}`);
+    }
+
+    // Targets
+    lines.push(`Entry: $${rec.targets.entry.toFixed(2)} → Target: $${rec.targets.target.toFixed(2)} | Stop: $${rec.targets.stopLoss.toFixed(2)}`);
+    lines.push(`Risk/Reward: **${rec.targets.riskReward}:1**`);
+
+    // Supporting factors (short form)
+    if (rec.factors.length > 0) {
+      lines.push(`✓ ${rec.factors.slice(0, 3).join(' | ')}`);
+    }
+
+    // Warnings (short form)
+    if (rec.warnings.length > 0) {
+      lines.push(`⚠️ ${rec.warnings.slice(0, 2).join(' | ')}`);
+    }
+
+    // Bot's opinion
+    lines.push(`*${rec.recommendation.message}*`);
+
+    return lines.join('\n');
+  }
+
+  // Format paper trade recap embed
+  formatPaperRecap(summary) {
+    if (!summary || summary.total_trades === 0) {
+      const embed = new EmbedBuilder()
+        .setTitle('📊 Paper Trading Daily Recap')
+        .setColor(0x808080)
+        .setDescription('No paper trades today.')
+        .setTimestamp();
+      return embed;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Paper Trading Daily Recap')
+      .setColor(summary.total_pnl_dollars >= 0 ? 0x00FF00 : 0xFF0000)
+      .setTimestamp();
+
+    // Overall stats
+    const closedCount = (summary.winners || 0) + (summary.losers || 0);
+
+    embed.addFields({
+      name: '📈 Performance',
+      value: [
+        `Total Trades: **${summary.total_trades}** (${summary.open_trades || 0} still open)`,
+        `Win Rate: **${summary.winRate}%** (${summary.winners}W / ${summary.losers}L)`,
+        `Avg P&L: **${(summary.avg_pnl_percent || 0).toFixed(2)}%**`,
+        `Total P&L: **$${(summary.total_pnl_dollars || 0).toFixed(2)}** (based on $1000/trade)`
+      ].join('\n'),
+      inline: false
+    });
+
+    // Exit stats
+    embed.addFields({
+      name: '🎯 Trade Exits',
+      value: `Targets Hit: **${summary.targets_hit || 0}** | Stops Hit: **${summary.stops_hit || 0}**`,
+      inline: true
+    });
+
+    embed.addFields({
+      name: '📊 Avg Confidence',
+      value: `**${(summary.avg_confidence || 0).toFixed(0)}/100**`,
+      inline: true
+    });
+
+    // By confidence level
+    if (summary.byConfidence && summary.byConfidence.length > 0) {
+      const confText = summary.byConfidence.map(conf => {
+        const winRate = conf.count > 0 ? ((conf.winners / conf.count) * 100).toFixed(0) : 0;
+        return `${conf.confidence_level}: ${conf.count} trades, ${winRate}% win, ${(conf.avg_pnl || 0).toFixed(2)}% avg`;
+      }).join('\n');
+
+      embed.addFields({
+        name: '🎚️ By Confidence Level',
+        value: confText,
+        inline: false
+      });
+    }
+
+    // Best/worst trades
+    if (summary.bestTrade || summary.worstTrade) {
+      const tradeText = [];
+      if (summary.bestTrade) {
+        tradeText.push(`🏆 Best: **${summary.bestTrade.ticker}** +${(summary.bestTrade.pnl_percent || 0).toFixed(2)}%`);
+      }
+      if (summary.worstTrade) {
+        tradeText.push(`📉 Worst: **${summary.worstTrade.ticker}** ${(summary.worstTrade.pnl_percent || 0).toFixed(2)}%`);
+      }
+      embed.addFields({
+        name: '🏅 Notable Trades',
+        value: tradeText.join('\n'),
+        inline: false
+      });
+    }
+
+    // Insight
+    let insight = '';
+    if (parseFloat(summary.winRate) >= 60) {
+      insight = '✅ Strong day! The recommendation system is working well.';
+    } else if (parseFloat(summary.winRate) >= 50) {
+      insight = '📊 Decent performance. Continue monitoring signal quality.';
+    } else if (closedCount > 0) {
+      insight = '⚠️ Challenging day. Consider reviewing which factors led to losses.';
+    }
+
+    if (insight) {
+      embed.addFields({
+        name: '💡 Insight',
+        value: insight,
+        inline: false
+      });
+    }
+
+    embed.setFooter({ text: `Market Close - ${marketHours.formatTimeET()} ET` });
+    return embed;
+  }
+
+  // Format active paper trades
+  formatActivePaperTrades(trades) {
+    if (!trades || trades.length === 0) {
+      return '📋 No active paper trades.';
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📈 Active Paper Trades (${trades.length})`)
+      .setColor(0x3498DB)
+      .setTimestamp();
+
+    let description = '';
+    for (const trade of trades.slice(0, 10)) {
+      const emoji = trade.direction === 'BULLISH' ? '🟢' : '🔴';
+      description += `${emoji} **${trade.ticker}** ${trade.direction}\n`;
+      description += `Entry: $${trade.entry_price.toFixed(2)} | Target: $${trade.target_price.toFixed(2)} | Stop: $${trade.stop_price.toFixed(2)}\n`;
+      if (trade.option_type) {
+        description += `Option: ${trade.option_strike} ${trade.option_type}\n`;
+      }
+      description += `Confidence: ${trade.confidence_score}/100\n\n`;
+    }
+
+    embed.setDescription(description);
+    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
     return embed;
   }
 
