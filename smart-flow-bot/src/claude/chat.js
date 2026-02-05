@@ -123,12 +123,15 @@ class ClaudeChat {
     return new Promise((resolve) => {
       const timeout = 120000; // 120 second timeout (Claude can be slow)
 
-      // Use claude with -p (print) flag for single response
-      // Pass prompt as argument directly - no shell escaping needed
-      const proc = spawn(this.claudePath, ['-p', prompt], {
-        env: { ...process.env }
-        // No shell: true - arguments are passed directly to the process
+      // Use claude with --print flag and pipe prompt via stdin
+      const proc = spawn(this.claudePath, ['--print'], {
+        env: { ...process.env, HOME: process.env.HOME || '/Users/benjaminarp' },
+        stdio: ['pipe', 'pipe', 'pipe']
       });
+
+      // Write prompt to stdin and close it
+      proc.stdin.write(prompt);
+      proc.stdin.end();
 
       let stdout = '';
       let stderr = '';
