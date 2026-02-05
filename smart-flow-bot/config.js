@@ -2,7 +2,7 @@ module.exports = {
   // API Keys
   polygon: {
     apiKey: process.env.POLYGON_API_KEY || 'AFm3DfCNME7kNNyi5W1VzWTHSwhELs2l',
-    wsUrl: 'wss://socket.polygon.io/stocks',  // Changed to stocks for Starter plan
+    wsUrl: 'wss://delayed.polygon.io/stocks',  // Delayed endpoint for $29 plan (15-min delay)
     restUrl: 'https://api.polygon.io'
   },
 
