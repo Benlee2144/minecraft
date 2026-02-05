@@ -1,7 +1,7 @@
 module.exports = {
   // API Keys
   polygon: {
-    apiKey: process.env.POLYGON_API_KEY || 'AFm3DfCNME7kNNyi5W1VzWTHSwhELs2l',
+    apiKey: process.env.POLYGON_API_KEY || 'tLhqSEEWhJO3NFYBSMOIMLDCUi_1sGiP',
     wsUrl: 'wss://socket.polygon.io/stocks',  // Changed to stocks for Starter plan
     restUrl: 'https://api.polygon.io'
   },
