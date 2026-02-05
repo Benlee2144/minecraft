@@ -7,12 +7,12 @@ const keyLevels = require('./keyLevels');
 
 class TradeRecommendation {
   constructor() {
-    // Confidence thresholds - AGGRESSIVE for day trading options
-    this.FIRE_ALERT = 85;      // 🔥🔥🔥 ENTER NOW
-    this.STRONG_BUY = 75;      // 🔥 STRONG ENTRY
-    this.BUY = 65;             // ✅ GOOD ENTRY
-    this.LEAN = 55;            // 🔸 LEAN ENTRY (still tradeable)
-    this.WATCH = 40;           // 👀 MONITOR ONLY
+    // Confidence thresholds - VERY AGGRESSIVE for day trading options
+    this.FIRE_ALERT = 80;      // 🔥🔥🔥 ENTER NOW
+    this.STRONG_BUY = 70;      // 🔥 STRONG ENTRY
+    this.BUY = 55;             // ✅ GOOD ENTRY
+    this.LEAN = 45;            // 🔸 LEAN ENTRY (still tradeable)
+    this.WATCH = 30;           // 👀 MONITOR ONLY
     this.AVOID = 0;            // ⛔ DO NOT TRADE
 
     // Position sizing
