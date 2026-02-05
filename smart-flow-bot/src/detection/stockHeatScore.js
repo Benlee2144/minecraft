@@ -2,20 +2,45 @@ const config = require('../../config');
 const logger = require('../utils/logger');
 const database = require('../database/sqlite');
 
+// Elite feature modules
+let earningsCalendar = null;
+let sectorCorrelation = null;
+let orderFlowImbalance = null;
+let blockTradeDetector = null;
+let vixMonitor = null;
+
+// Lazy load elite modules to avoid circular dependencies
+const getEliteModules = () => {
+  if (!earningsCalendar) {
+    try {
+      earningsCalendar = require('../utils/earnings');
+      sectorCorrelation = require('./sectorCorrelation');
+      orderFlowImbalance = require('./orderFlowImbalance');
+      blockTradeDetector = require('./blockTradeDetector');
+      vixMonitor = require('./vixMonitor');
+    } catch (error) {
+      logger.debug('Elite modules not fully loaded yet');
+    }
+  }
+  return { earningsCalendar, sectorCorrelation, orderFlowImbalance, blockTradeDetector, vixMonitor };
+};
+
 class StockHeatScore {
   constructor() {
     this.points = config.points;
   }
 
-  // Calculate heat score for a stock signal
+  // Calculate heat score for a stock signal with elite features
   calculate(signal, context = {}) {
     const breakdown = [];
     let totalScore = 0;
+    const eliteFactors = []; // Track elite feature contributions
 
     const {
       hasVolumeSpike = false,
       volumeMultiple = 0,
-      priceChange = 0
+      priceChange = 0,
+      includeEliteFactors = true
     } = context;
 
     // Score based on signal type
@@ -114,13 +139,80 @@ class StockHeatScore {
       breakdown.push({ signal: `${signalCount} signals in last hour`, points: 15 });
     }
 
-    // Cap at 100
-    const heatScore = Math.min(100, totalScore);
+    // ========== ELITE FEATURES ==========
+    if (includeEliteFactors) {
+      const elite = getEliteModules();
+
+      // 1. Earnings/Catalyst Awareness
+      if (elite.earningsCalendar) {
+        const earningsInfo = elite.earningsCalendar.hasUpcomingEarnings(signal.ticker, 5);
+        if (earningsInfo) {
+          if (earningsInfo.isToday || earningsInfo.isTomorrow) {
+            // REDUCE score for trades right before earnings (high risk)
+            totalScore -= 10;
+            breakdown.push({ signal: `⚠️ Earnings ${earningsInfo.isToday ? 'TODAY' : 'tomorrow'} - high risk`, points: -10 });
+            eliteFactors.push({ type: 'EARNINGS_WARNING', data: earningsInfo });
+          } else {
+            // Slight bonus for awareness
+            totalScore += 5;
+            breakdown.push({ signal: `📅 Earnings in ${earningsInfo.daysAway} days - catalyst aware`, points: 5 });
+            eliteFactors.push({ type: 'EARNINGS_CATALYST', data: earningsInfo });
+          }
+        }
+      }
+
+      // 2. Sector Correlation
+      if (elite.sectorCorrelation) {
+        const sectorAdj = elite.sectorCorrelation.getSectorScoreAdjustment(signal.ticker);
+        if (sectorAdj.adjustment !== 0) {
+          totalScore += sectorAdj.adjustment;
+          breakdown.push({ signal: `📊 ${sectorAdj.reason}`, points: sectorAdj.adjustment });
+          eliteFactors.push({ type: 'SECTOR', data: sectorAdj });
+        }
+      }
+
+      // 3. Order Flow Imbalance
+      if (elite.orderFlowImbalance) {
+        const signalDirection = signal.direction || (priceChange > 0 ? 'BULLISH' : 'BEARISH');
+        const flowAdj = elite.orderFlowImbalance.getFlowScoreAdjustment(signal.ticker, signalDirection);
+        if (flowAdj.adjustment !== 0) {
+          totalScore += flowAdj.adjustment;
+          breakdown.push({ signal: `📈 ${flowAdj.reason}`, points: flowAdj.adjustment });
+          eliteFactors.push({ type: 'ORDER_FLOW', data: flowAdj });
+        }
+      }
+
+      // 4. Block Trade Detection
+      if (elite.blockTradeDetector) {
+        const blockAdj = elite.blockTradeDetector.getBlockScoreAdjustment(signal.ticker);
+        if (blockAdj.adjustment !== 0) {
+          totalScore += blockAdj.adjustment;
+          breakdown.push({ signal: `🐋 ${blockAdj.reason}`, points: blockAdj.adjustment });
+          eliteFactors.push({ type: 'BLOCK_TRADE', data: blockAdj });
+        }
+      }
+
+      // 5. VIX Regime Adjustment
+      if (elite.vixMonitor) {
+        const vixLevel = elite.vixMonitor.getVixLevel();
+        if (vixLevel && vixLevel.positionSizeMultiplier < 1) {
+          // High VIX reduces confidence
+          const vixPenalty = Math.round((1 - vixLevel.positionSizeMultiplier) * 10);
+          totalScore -= vixPenalty;
+          breakdown.push({ signal: `${vixLevel.emoji} VIX ${vixLevel.level} - increased risk`, points: -vixPenalty });
+          eliteFactors.push({ type: 'VIX_WARNING', data: vixLevel });
+        }
+      }
+    }
+
+    // Cap at 100 (but can go below 0 with penalties)
+    const heatScore = Math.max(0, Math.min(100, totalScore));
 
     return {
       heatScore,
       rawScore: totalScore,
       breakdown,
+      eliteFactors,
       ticker: signal.ticker,
       signalType: signal.type,
       price: signal.price,
@@ -132,6 +224,11 @@ class StockHeatScore {
         ? 'high-conviction'
         : 'flow-alerts'
     };
+  }
+
+  // Calculate with full elite analysis
+  calculateWithElite(signal, context = {}) {
+    return this.calculate(signal, { ...context, includeEliteFactors: true });
   }
 
   // Format value

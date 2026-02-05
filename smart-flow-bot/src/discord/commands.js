@@ -13,6 +13,13 @@ const sectorHeatMap = require('../detection/sectorHeatMap');
 const marketHours = require('../utils/marketHours');
 const paperTrading = require('../utils/paperTrading');
 
+// Elite feature modules
+const winRateTracker = require('../detection/winRateTracker');
+const sectorCorrelation = require('../detection/sectorCorrelation');
+const orderFlowImbalance = require('../detection/orderFlowImbalance');
+const greeksCalculator = require('../detection/greeksCalculator');
+const blockTradeDetector = require('../detection/blockTradeDetector');
+
 class DiscordCommands {
   constructor() {
     this.commands = [];
@@ -239,6 +246,79 @@ class DiscordCommands {
       .setName('welcome')
       .setDescription('Send welcome/info messages to all channels explaining their purpose');
 
+    // ========== ELITE FEATURES ==========
+
+    // /winrate command (historical win rate analysis)
+    const winrateCommand = new SlashCommandBuilder()
+      .setName('winrate')
+      .setDescription('Show detailed win rate and backtesting statistics');
+
+    // /regime command (market regime analysis)
+    const regimeCommand = new SlashCommandBuilder()
+      .setName('regime')
+      .setDescription('Show current market regime (risk-on/risk-off) and sector rotation');
+
+    // /orderflow command (order flow imbalance)
+    const orderflowCommand = new SlashCommandBuilder()
+      .setName('orderflow')
+      .setDescription('Show order flow imbalance analysis for a ticker')
+      .addStringOption(option =>
+        option
+          .setName('ticker')
+          .setDescription('The ticker symbol to analyze')
+          .setRequired(true)
+      );
+
+    // /greeks command (options greeks calculator)
+    const greeksCommand = new SlashCommandBuilder()
+      .setName('greeks')
+      .setDescription('Calculate options Greeks (delta, gamma, theta, vega)')
+      .addNumberOption(option =>
+        option
+          .setName('spot')
+          .setDescription('Current stock price')
+          .setRequired(true)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('strike')
+          .setDescription('Option strike price')
+          .setRequired(true)
+      )
+      .addIntegerOption(option =>
+        option
+          .setName('dte')
+          .setDescription('Days to expiration')
+          .setRequired(true)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('premium')
+          .setDescription('Option premium (price)')
+          .setRequired(true)
+      )
+      .addStringOption(option =>
+        option
+          .setName('type')
+          .setDescription('Option type')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Call', value: 'call' },
+            { name: 'Put', value: 'put' }
+          )
+      );
+
+    // /blocks command (block trade detection)
+    const blocksCommand = new SlashCommandBuilder()
+      .setName('blocks')
+      .setDescription('Show block trade and dark pool activity')
+      .addStringOption(option =>
+        option
+          .setName('ticker')
+          .setDescription('Ticker to check (optional - shows summary if not provided)')
+          .setRequired(false)
+      );
+
     this.commands = [
       watchlistCommand,
       flowCommand,
@@ -256,7 +336,13 @@ class DiscordCommands {
       spyCommand,
       paperCommand,
       recapCommand,
-      welcomeCommand
+      welcomeCommand,
+      // Elite features
+      winrateCommand,
+      regimeCommand,
+      orderflowCommand,
+      greeksCommand,
+      blocksCommand
     ];
   }
 
@@ -347,6 +433,22 @@ class DiscordCommands {
           break;
         case 'welcome':
           await this.handleWelcome(interaction);
+          break;
+        // Elite feature commands
+        case 'winrate':
+          await this.handleWinrate(interaction);
+          break;
+        case 'regime':
+          await this.handleRegime(interaction);
+          break;
+        case 'orderflow':
+          await this.handleOrderflow(interaction);
+          break;
+        case 'greeks':
+          await this.handleGreeks(interaction);
+          break;
+        case 'blocks':
+          await this.handleBlocks(interaction);
           break;
         default:
           await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -1245,6 +1347,127 @@ class DiscordCommands {
     } catch (error) {
       logger.error('Error handling /welcome command', { error: error.message });
       await interaction.editReply('Error sending welcome messages. Make sure all channel IDs are configured correctly.');
+    }
+  }
+
+  // ========== ELITE FEATURE HANDLERS ==========
+
+  // Handle /winrate command (win rate analysis)
+  async handleWinrate(interaction) {
+    await interaction.deferReply();
+
+    try {
+      const embed = winRateTracker.formatWinRateEmbed();
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /winrate command', { error: error.message });
+      await interaction.editReply('Error fetching win rate statistics.');
+    }
+  }
+
+  // Handle /regime command (market regime)
+  async handleRegime(interaction) {
+    await interaction.deferReply();
+
+    try {
+      // Update sector correlation data
+      await sectorCorrelation.updateHistory();
+
+      const embed = sectorCorrelation.formatRegimeStatus();
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /regime command', { error: error.message });
+      await interaction.editReply('Error fetching market regime data.');
+    }
+  }
+
+  // Handle /orderflow command (order flow imbalance)
+  async handleOrderflow(interaction) {
+    await interaction.deferReply();
+
+    const ticker = interaction.options.getString('ticker').toUpperCase();
+
+    try {
+      // Try to update from snapshot if no flow data
+      const imbalance = orderFlowImbalance.getImbalance(ticker);
+      if (!imbalance) {
+        await orderFlowImbalance.updateFromSnapshot(ticker);
+      }
+
+      const embed = orderFlowImbalance.formatFlowEmbed(ticker);
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /orderflow command', { error: error.message });
+      await interaction.editReply('Error fetching order flow data.');
+    }
+  }
+
+  // Handle /greeks command (options greeks calculator)
+  async handleGreeks(interaction) {
+    await interaction.deferReply();
+
+    try {
+      const spot = interaction.options.getNumber('spot');
+      const strike = interaction.options.getNumber('strike');
+      const dte = interaction.options.getInteger('dte');
+      const premium = interaction.options.getNumber('premium');
+      const optionType = interaction.options.getString('type');
+
+      const isCall = optionType === 'call';
+
+      const greeks = greeksCalculator.calculateAllGreeks(spot, strike, dte, premium, isCall);
+      const embed = greeksCalculator.formatGreeksEmbed(greeks);
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /greeks command', { error: error.message });
+      await interaction.editReply('Error calculating Greeks. Make sure all inputs are valid.');
+    }
+  }
+
+  // Handle /blocks command (block trade detection)
+  async handleBlocks(interaction) {
+    await interaction.deferReply();
+
+    try {
+      const ticker = interaction.options.getString('ticker')?.toUpperCase();
+
+      if (ticker) {
+        // Show block trade analysis for specific ticker
+        const embed = blockTradeDetector.formatBlockEmbed(ticker);
+        await interaction.editReply({ embeds: [embed] });
+      } else {
+        // Show summary of all block activity
+        const summary = blockTradeDetector.getSummary();
+        const { EmbedBuilder } = require('discord.js');
+
+        const embed = new EmbedBuilder()
+          .setTitle('🐋 Block Trade Summary')
+          .setColor(0x4169E1)
+          .setTimestamp();
+
+        if (summary.totalBlocks === 0) {
+          embed.setDescription('No block trades detected today.\n\nBlock trade detection is active during market hours and will identify large trades (>10k shares or >$200k value).');
+        } else {
+          let description = `**Total Blocks:** ${summary.totalBlocks}\n`;
+          description += `**Total Value:** ${summary.totalValue}\n`;
+          description += `**Tickers:** ${summary.tickersWithBlocks}\n\n`;
+          description += '**Top Tickers by Block Count:**\n';
+
+          for (const ticker of summary.topTickers) {
+            description += `• **${ticker.ticker}**: ${ticker.blockCount} blocks (${ticker.value})\n`;
+          }
+
+          embed.setDescription(description);
+        }
+
+        embed.setFooter({ text: 'Use /blocks TICKER for detailed analysis' });
+
+        await interaction.editReply({ embeds: [embed] });
+      }
+    } catch (error) {
+      logger.error('Error handling /blocks command', { error: error.message });
+      await interaction.editReply('Error fetching block trade data.');
     }
   }
 }

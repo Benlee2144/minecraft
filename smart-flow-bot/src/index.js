@@ -21,6 +21,13 @@ const patternRecognition = require('./detection/patternRecognition');
 const vixMonitor = require('./detection/vixMonitor');
 const afterHoursScanner = require('./detection/afterHoursScanner');
 
+// Elite Pro features (Institutional-grade)
+const sectorCorrelation = require('./detection/sectorCorrelation');
+const winRateTracker = require('./detection/winRateTracker');
+const orderFlowImbalance = require('./detection/orderFlowImbalance');
+const greeksCalculator = require('./detection/greeksCalculator');
+const blockTradeDetector = require('./detection/blockTradeDetector');
+
 // Data modules
 const earningsCalendar = require('./utils/earnings');
 const paperTrading = require('./utils/paperTrading');
@@ -47,6 +54,7 @@ class SmartStockScanner {
     this.preMarketInterval = null;
     this.afterHoursInterval = null;
     this.vixUpdateInterval = null;
+    this.sectorCorrelationInterval = null;
   }
 
   async start() {
@@ -108,6 +116,9 @@ class SmartStockScanner {
 
       // Start VIX monitoring
       this.startVixMonitoring();
+
+      // Start sector correlation monitoring
+      this.startSectorCorrelationMonitoring();
 
       this.isRunning = true;
 
@@ -339,6 +350,32 @@ class SmartStockScanner {
     }, 5 * 60 * 1000); // Every 5 minutes
   }
 
+  // Start sector correlation monitoring
+  startSectorCorrelationMonitoring() {
+    logger.info('Sector correlation monitoring initialized');
+
+    // Update sector correlation every 10 minutes
+    this.sectorCorrelationInterval = setInterval(async () => {
+      if (marketHours.isMarketOpen()) {
+        try {
+          await sectorCorrelation.updateHistory();
+
+          // Check for rotation signals
+          const signals = sectorCorrelation.rotationSignals;
+          if (signals && signals.length > 0) {
+            for (const signal of signals) {
+              if (signal.strength >= 60) {
+                logger.info(`Sector rotation: ${signal.type} - ${signal.message}`);
+              }
+            }
+          }
+        } catch (error) {
+          logger.error('Sector correlation update error', { error: error.message });
+        }
+      }
+    }, 10 * 60 * 1000); // Every 10 minutes
+  }
+
   async stopMonitoring() {
     this.isMonitoring = false;
 
@@ -493,6 +530,33 @@ class SmartStockScanner {
 
       // Store current snapshot for next comparison
       this.lastSnapshots.set(ticker, { ...snapshot, timestamp: Date.now() });
+
+      // Update order flow imbalance tracking
+      if (snapshot.todayVolume && snapshot.todayChangePercent !== undefined) {
+        orderFlowImbalance.updateFlowData(ticker, {
+          price: snapshot.price,
+          volume: snapshot.todayVolume - (lastSnapshot?.todayVolume || 0),
+          change: snapshot.todayChangePercent
+        });
+      }
+
+      // Check for block trade patterns
+      if (snapshot.todayVolume > 500000 && snapshot.price > 20) {
+        // Estimate if there might be block activity based on volume patterns
+        const avgVolume = this.volumeBaselines.get(ticker) || snapshot.prevDayVolume || 1;
+        const volumeRatio = snapshot.todayVolume / avgVolume;
+
+        if (volumeRatio > 2.5) {
+          // High volume suggests possible block activity
+          blockTradeDetector.analyzeBlock(ticker, {
+            price: snapshot.price,
+            size: Math.round((snapshot.todayVolume - (lastSnapshot?.todayVolume || 0)) * 0.1),
+            value: (snapshot.todayVolume - (lastSnapshot?.todayVolume || 0)) * 0.1 * snapshot.price,
+            conditions: [],
+            previousClose: snapshot.prevDayClose
+          });
+        }
+      }
 
       // Detect signals
       const signals = this.detectSignals(snapshot, lastSnapshot);
@@ -1023,6 +1087,14 @@ class SmartStockScanner {
     if (this.vixUpdateInterval) {
       clearInterval(this.vixUpdateInterval);
     }
+
+    if (this.sectorCorrelationInterval) {
+      clearInterval(this.sectorCorrelationInterval);
+    }
+
+    // Clear elite module data
+    orderFlowImbalance.clearAllFlowData();
+    blockTradeDetector.clearDayData();
 
     // Shutdown components
     await discordBot.shutdown();
