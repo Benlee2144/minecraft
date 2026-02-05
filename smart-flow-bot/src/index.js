@@ -1095,9 +1095,9 @@ class SmartStockScanner {
       // Add recommendation to heat result for display
       heatResult.recommendation = recommendation;
 
-      // Open paper trade if recommendation is actionable
-      if (recommendation && recommendation.confidenceScore >= 70 &&
-          recommendation.recommendation.action !== 'WATCH' &&
+      // Open paper trade if recommendation is actionable (lowered threshold for day trading)
+      // Day traders need action - if heat score hit 60+ threshold, we should trade
+      if (recommendation && recommendation.confidenceScore >= 60 &&
           recommendation.recommendation.action !== 'AVOID') {
         // Check if we should open this trade
         if (paperTrading.shouldOpenTrade(ticker, recommendation.direction)) {
