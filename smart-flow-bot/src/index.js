@@ -50,8 +50,9 @@ class SmartStockScanner {
     this.alertCooldownMs = 60000; // 60 second cooldown
     this.pollIntervalMs = 30000; // REST poll every 30 seconds
 
-    // WebSocket mode - uses delayed endpoint (15-min delay on $29 plan)
-    this.useWebSocket = true;
+    // REST polling is better than WebSocket on $29 plan
+    // WebSocket = 15-min delayed, REST = current data every 30 sec
+    this.useWebSocket = false;
     this.wsConnected = false;
     this.realtimeVolumes = new Map(); // Track real-time volume accumulation
     this.lastTradePrice = new Map(); // Track last trade price per ticker
