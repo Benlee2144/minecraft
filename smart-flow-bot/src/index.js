@@ -9,6 +9,9 @@ const polygonRest = require('./polygon/rest');
 // Stock Detection modules
 const stockHeatScore = require('./detection/stockHeatScore');
 
+// Data modules
+const earningsCalendar = require('./utils/earnings');
+
 // Discord
 const discordBot = require('./discord/bot');
 
@@ -35,6 +38,9 @@ class SmartStockScanner {
       // Initialize database
       logger.info('Initializing database...');
       database.initialize();
+
+      // Initialize earnings calendar
+      earningsCalendar.initialize();
 
       // Load volume baselines
       logger.info('Loading volume baselines...');
@@ -429,6 +435,12 @@ class SmartStockScanner {
 
     // Update cooldown
     this.alertCooldowns.set(ticker, Date.now());
+
+    // Check for upcoming earnings
+    const earningsWarning = earningsCalendar.getEarningsWarning(ticker);
+    if (earningsWarning) {
+      heatResult.earningsWarning = earningsWarning;
+    }
 
     // Log the signal
     logger.flow(ticker, heatResult.heatScore, heatResult.breakdown);

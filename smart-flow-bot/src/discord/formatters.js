@@ -142,9 +142,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format block trade alert
@@ -179,9 +177,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format momentum surge alert
@@ -216,9 +212,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format breakout alert
@@ -246,9 +240,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format gap alert
@@ -283,9 +275,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format VWAP cross alert
@@ -314,9 +304,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format relative strength alert
@@ -348,9 +336,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Generic format alert based on signal type
@@ -636,40 +622,89 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
 
     // Alert stats
     embed.addFields({
-      name: 'Alerts Today',
-      value: `Total: ${stats.total_alerts || 0}\nHigh Conviction: ${stats.high_conviction || 0}`,
+      name: '🔔 Alerts Today',
+      value: `**${stats.total_alerts || 0}** total alerts\n🔴 High Conviction: **${stats.high_conviction || 0}**\n🟡 Standard: **${stats.standard_alerts || 0}**`,
       inline: true
     });
 
+    // Unique tickers
+    embed.addFields({
+      name: '📈 Coverage',
+      value: `**${stats.unique_tickers || 0}** unique tickers\nAvg Heat: **${(stats.avg_heat_score || 0).toFixed(0)}**/100`,
+      inline: true
+    });
+
+    // Top tickers by alert count
+    if (stats.topTickers && stats.topTickers.length > 0) {
+      const topText = stats.topTickers.slice(0, 5).map((t, i) => {
+        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '•';
+        return `${medal} **${t.ticker}**: ${t.alert_count} alerts (${t.max_score} heat)`;
+      }).join('\n');
+
+      embed.addFields({
+        name: '🏆 Most Active Tickers',
+        value: topText,
+        inline: false
+      });
+    }
+
     // Signal breakdown
-    if (stats.signalBreakdown) {
+    if (stats.signalBreakdown && Object.keys(stats.signalBreakdown).length > 0) {
       const breakdown = Object.entries(stats.signalBreakdown)
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
-        .map(([type, count]) => `${this.formatSignalType(type)}: ${count}`)
+        .map(([type, count]) => `• ${this.formatSignalType(type)}: **${count}**`)
         .join('\n');
 
       embed.addFields({
-        name: 'Top Signal Types',
+        name: '📊 Signal Types',
         value: breakdown || 'N/A',
         inline: true
       });
     }
 
-    // Top movers
-    if (stats.topMovers && stats.topMovers.length > 0) {
-      const moversText = stats.topMovers.slice(0, 5).map(m =>
-        `${m.ticker}: ${m.change > 0 ? '+' : ''}${m.change.toFixed(2)}%`
-      ).join('\n');
-
+    // Total volume
+    if (stats.total_volume) {
       embed.addFields({
-        name: 'Top Movers',
-        value: moversText,
+        name: '💰 Volume Tracked',
+        value: `$${this.formatNumber(stats.total_volume)}`,
         inline: true
       });
     }
 
-    embed.setFooter({ text: `Market Close - ${marketHours.formatTimeET()} ET` });
+    // Add tips for tomorrow
+    embed.addFields({
+      name: '💡 Tip',
+      value: 'Use `/perf` to see how today\'s alerts performed. Add tickers with `/watchlist add` to get alerts at lower thresholds.',
+      inline: false
+    });
+
+    embed.setFooter({ text: `Market Close - ${marketHours.formatTimeET()} ET | See you tomorrow!` });
+    return embed;
+  }
+
+  // Helper: Add final fields to alert embed (chart, earnings, footer)
+  finalizeAlertEmbed(embed, ticker, heatResult = {}) {
+    // Add earnings warning if present
+    if (heatResult.earningsWarning) {
+      embed.addFields({
+        name: '⚠️ Earnings Alert',
+        value: heatResult.earningsWarning,
+        inline: false
+      });
+    }
+
+    // Add TradingView chart link
+    const chartUrl = `https://www.tradingview.com/chart/?symbol=${ticker}`;
+    embed.addFields({
+      name: '📊 Chart',
+      value: `[View on TradingView](${chartUrl})`,
+      inline: true
+    });
+
+    // Set footer with time
+    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
+
     return embed;
   }
 

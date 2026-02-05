@@ -6,6 +6,7 @@ const formatters = require('./formatters');
 const heatScore = require('../detection/heatScore');
 const claudeChat = require('../claude/chat');
 const polygonRest = require('../polygon/rest');
+const earningsCalendar = require('../utils/earnings');
 
 class DiscordCommands {
   constructor() {
@@ -104,6 +105,44 @@ class DiscordCommands {
       .setName('perf')
       .setDescription('Show alert performance statistics and win rates');
 
+    // /earnings command
+    const earningsCommand = new SlashCommandBuilder()
+      .setName('earnings')
+      .setDescription('Check upcoming earnings for watched tickers')
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('check')
+          .setDescription('Check if a ticker has upcoming earnings')
+          .addStringOption(option =>
+            option
+              .setName('ticker')
+              .setDescription('The ticker symbol')
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('set')
+          .setDescription('Set earnings date for a ticker')
+          .addStringOption(option =>
+            option
+              .setName('ticker')
+              .setDescription('The ticker symbol')
+              .setRequired(true)
+          )
+          .addStringOption(option =>
+            option
+              .setName('date')
+              .setDescription('Earnings date (YYYY-MM-DD)')
+              .setRequired(true)
+          )
+      )
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('upcoming')
+          .setDescription('Show all upcoming earnings this week')
+      );
+
     this.commands = [
       watchlistCommand,
       flowCommand,
@@ -113,7 +152,8 @@ class DiscordCommands {
       askCommand,
       clearCommand,
       ideaCommand,
-      perfCommand
+      perfCommand,
+      earningsCommand
     ];
   }
 
@@ -179,6 +219,9 @@ class DiscordCommands {
           break;
         case 'perf':
           await this.handlePerf(interaction);
+          break;
+        case 'earnings':
+          await this.handleEarnings(interaction);
           break;
         default:
           await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -492,6 +535,79 @@ class DiscordCommands {
     } catch (error) {
       logger.error('Error handling /perf command', { error: error.message });
       await interaction.editReply('Error fetching performance stats.');
+    }
+  }
+
+  // Handle /earnings command
+  async handleEarnings(interaction) {
+    const subcommand = interaction.options.getSubcommand();
+
+    switch (subcommand) {
+      case 'check': {
+        const ticker = interaction.options.getString('ticker').toUpperCase();
+        const warning = earningsCalendar.getEarningsWarning(ticker);
+
+        if (warning) {
+          await interaction.reply({ content: `**${ticker}**: ${warning}`, ephemeral: true });
+        } else {
+          await interaction.reply({
+            content: `**${ticker}**: No upcoming earnings in the calendar.\nUse \`/earnings set ${ticker} YYYY-MM-DD\` to add it.`,
+            ephemeral: true
+          });
+        }
+        break;
+      }
+
+      case 'set': {
+        const ticker = interaction.options.getString('ticker').toUpperCase();
+        const date = interaction.options.getString('date');
+
+        // Validate date format
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          await interaction.reply({
+            content: 'Invalid date format. Use YYYY-MM-DD (e.g., 2026-02-15)',
+            ephemeral: true
+          });
+          return;
+        }
+
+        earningsCalendar.setEarningsDate(ticker, date);
+        await interaction.reply({
+          content: `✅ Set earnings date for **${ticker}**: ${date}`,
+          ephemeral: true
+        });
+        break;
+      }
+
+      case 'upcoming': {
+        const upcoming = earningsCalendar.getUpcomingEarnings(7);
+
+        if (upcoming.length === 0) {
+          await interaction.reply({
+            content: 'No upcoming earnings in the calendar this week.\nAdd earnings dates with `/earnings set TICKER YYYY-MM-DD`',
+            ephemeral: true
+          });
+          return;
+        }
+
+        const { EmbedBuilder } = require('discord.js');
+        const embed = new EmbedBuilder()
+          .setTitle('📅 Upcoming Earnings')
+          .setColor(0xF39C12)
+          .setTimestamp();
+
+        const earningsText = upcoming.map(e => {
+          if (e.daysAway === 0) return `🔴 **${e.ticker}** - TODAY`;
+          if (e.daysAway === 1) return `🟠 **${e.ticker}** - Tomorrow (${e.date})`;
+          return `🟡 **${e.ticker}** - ${e.date} (${e.daysAway} days)`;
+        }).join('\n');
+
+        embed.setDescription(earningsText);
+        embed.setFooter({ text: 'Add more with /earnings set TICKER YYYY-MM-DD' });
+
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+        break;
+      }
     }
   }
 }
