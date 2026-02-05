@@ -11,9 +11,11 @@ class DiscordBot {
     this.client = null;
     this.isReady = false;
     this.channels = {
-      highConviction: null,
-      flowAlerts: null,
-      botStatus: null
+      fireAlerts: null,      // 90+ FIRE, 80+ STRONG BUY
+      flowScanner: null,     // 60-79 regular alerts
+      paperTrades: null,     // Paper trading updates
+      dailyRecap: null,      // EOD summaries
+      claudeChat: null       // Claude AI responses
     };
     this.statusCallback = null;
   }
@@ -87,19 +89,30 @@ class DiscordBot {
 
   async cacheChannels() {
     try {
-      if (config.discord.channels.highConviction) {
-        this.channels.highConviction = await this.client.channels.fetch(config.discord.channels.highConviction);
-        logger.info('Cached high-conviction channel');
+      // Cache all 5 channels
+      if (config.discord.channels.fireAlerts) {
+        this.channels.fireAlerts = await this.client.channels.fetch(config.discord.channels.fireAlerts);
+        logger.info('Cached fire-alerts channel (80+ signals)');
       }
 
-      if (config.discord.channels.flowAlerts) {
-        this.channels.flowAlerts = await this.client.channels.fetch(config.discord.channels.flowAlerts);
-        logger.info('Cached flow-alerts channel');
+      if (config.discord.channels.flowScanner) {
+        this.channels.flowScanner = await this.client.channels.fetch(config.discord.channels.flowScanner);
+        logger.info('Cached flow-scanner channel (60-79 signals)');
       }
 
-      if (config.discord.channels.botStatus) {
-        this.channels.botStatus = await this.client.channels.fetch(config.discord.channels.botStatus);
-        logger.info('Cached bot-status channel');
+      if (config.discord.channels.paperTrades) {
+        this.channels.paperTrades = await this.client.channels.fetch(config.discord.channels.paperTrades);
+        logger.info('Cached paper-trades channel');
+      }
+
+      if (config.discord.channels.dailyRecap) {
+        this.channels.dailyRecap = await this.client.channels.fetch(config.discord.channels.dailyRecap);
+        logger.info('Cached daily-recap channel');
+      }
+
+      if (config.discord.channels.claudeChat) {
+        this.channels.claudeChat = await this.client.channels.fetch(config.discord.channels.claudeChat);
+        logger.info('Cached claude-chat channel');
       }
     } catch (error) {
       logger.error('Failed to cache channels', { error: error.message });
@@ -118,14 +131,17 @@ class DiscordBot {
       // Use the type-specific formatter
       const embed = formatters.formatAlert(signal, heatResult);
 
-      // Determine channel
-      const channel = heatResult.isHighConviction
-        ? this.channels.highConviction
-        : this.channels.flowAlerts;
+      // Determine channel based on heat score
+      // 80+ goes to fire-alerts, 60-79 goes to flow-scanner
+      const channel = heatResult.heatScore >= 80
+        ? this.channels.fireAlerts
+        : this.channels.flowScanner;
+
+      const channelName = heatResult.heatScore >= 80 ? 'fire-alerts' : 'flow-scanner';
 
       if (channel) {
         await channel.send({ embeds: [embed] });
-        logger.info(`Stock alert sent to ${heatResult.channel}`, {
+        logger.info(`Stock alert sent to ${channelName}`, {
           ticker: heatResult.ticker,
           signalType: signal.type,
           heatScore: heatResult.heatScore
@@ -151,14 +167,14 @@ class DiscordBot {
     try {
       const embed = formatters.formatFlowAlert(heatResult);
 
-      // Determine channel
-      const channel = heatResult.isHighConviction
-        ? this.channels.highConviction
-        : this.channels.flowAlerts;
+      // Determine channel based on heat score
+      const channel = heatResult.heatScore >= 80
+        ? this.channels.fireAlerts
+        : this.channels.flowScanner;
 
       if (channel) {
         await channel.send({ embeds: [embed] });
-        logger.info(`Alert sent to ${heatResult.channel}`, {
+        logger.info(`Alert sent to ${heatResult.heatScore >= 80 ? 'fire-alerts' : 'flow-scanner'}`, {
           ticker: heatResult.ticker,
           heatScore: heatResult.heatScore
         });
@@ -172,7 +188,7 @@ class DiscordBot {
     }
   }
 
-  // Send outcome update
+  // Send outcome update (goes to paper-trades channel)
   async sendOutcomeUpdate(alert, outcome) {
     if (!this.isReady) {
       logger.info('Outcome update', { alert: alert.ticker, outcome });
@@ -181,9 +197,8 @@ class DiscordBot {
 
     try {
       const embed = formatters.formatOutcomeUpdate(alert, outcome);
-      const channel = alert.heat_score >= 80
-        ? this.channels.highConviction
-        : this.channels.flowAlerts;
+      // Outcome updates go to paper-trades channel
+      const channel = this.channels.paperTrades;
 
       if (channel) {
         await channel.send({ embeds: [embed] });
@@ -193,46 +208,46 @@ class DiscordBot {
     }
   }
 
-  // Send startup message
+  // Send startup message (to flow-scanner channel)
   async sendStartupMessage(status) {
-    if (!this.isReady || !this.channels.botStatus) {
+    if (!this.isReady || !this.channels.flowScanner) {
       logger.info('Bot started', status);
       return;
     }
 
     try {
       const embed = formatters.formatStartupMessage(status);
-      await this.channels.botStatus.send({ embeds: [embed] });
+      await this.channels.flowScanner.send({ embeds: [embed] });
     } catch (error) {
       logger.error('Failed to send startup message', { error: error.message });
     }
   }
 
-  // Send error to status channel
+  // Send error to flow-scanner channel
   async sendError(error, context = '') {
-    if (!this.isReady || !this.channels.botStatus) {
+    if (!this.isReady || !this.channels.flowScanner) {
       logger.error('Bot error', { error: error.message, context });
       return;
     }
 
     try {
       const embed = formatters.formatError(error, context);
-      await this.channels.botStatus.send({ embeds: [embed] });
+      await this.channels.flowScanner.send({ embeds: [embed] });
     } catch (err) {
       logger.error('Failed to send error message', { error: err.message });
     }
   }
 
-  // Send daily summary
+  // Send daily summary (to daily-recap channel)
   async sendDailySummary(stats) {
-    if (!this.isReady || !this.channels.botStatus) {
+    if (!this.isReady || !this.channels.dailyRecap) {
       logger.info('Daily summary', { stats });
       return;
     }
 
     try {
       const embed = formatters.formatDailySummary(stats);
-      await this.channels.botStatus.send({ embeds: [embed] });
+      await this.channels.dailyRecap.send({ embeds: [embed] });
     } catch (error) {
       logger.error('Failed to send daily summary', { error: error.message });
     }
@@ -334,6 +349,25 @@ class DiscordBot {
   // Get all watched tickers
   getAllWatchedTickers() {
     return database.getAllWatchedTickers();
+  }
+
+  // Send paper trade update
+  async sendPaperTradeUpdate(embed) {
+    if (!this.isReady || !this.channels.paperTrades) {
+      logger.info('Paper trade update (no channel)');
+      return;
+    }
+
+    try {
+      await this.channels.paperTrades.send({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Failed to send paper trade update', { error: error.message });
+    }
+  }
+
+  // Get channel descriptions for /rooms command
+  getChannelDescriptions() {
+    return config.discord.channelDescriptions;
   }
 
   // Shutdown

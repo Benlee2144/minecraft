@@ -647,6 +647,27 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
     return embed;
   }
 
+  // Format room/channel descriptions
+  formatRoomDescriptions(channelDescriptions) {
+    const embed = new EmbedBuilder()
+      .setTitle('📋 Channel Guide')
+      .setDescription('Here\'s what each channel is for:')
+      .setColor(0x5865F2) // Discord blurple
+      .setTimestamp();
+
+    // Add each channel as a field
+    for (const [key, info] of Object.entries(channelDescriptions)) {
+      embed.addFields({
+        name: `${info.emoji} ${info.name}`,
+        value: `${info.description}\n${info.threshold !== 'N/A' ? `**Threshold:** ${info.threshold}` : ''}`,
+        inline: false
+      });
+    }
+
+    embed.setFooter({ text: 'Use /rooms anytime to see this guide' });
+    return embed;
+  }
+
   // Helper: Format large numbers
   formatNumber(num) {
     if (num >= 1000000000) {

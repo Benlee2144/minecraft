@@ -11,11 +11,46 @@ module.exports = {
 
   discord: {
     token: process.env.DISCORD_BOT_TOKEN || '',
-    // Channel IDs - Update these after creating your Discord server
+    // Channel IDs - Multi-channel setup
     channels: {
-      highConviction: process.env.HIGH_CONVICTION_CHANNEL || '',
-      flowAlerts: process.env.FLOW_ALERTS_CHANNEL || '',
-      botStatus: process.env.BOT_STATUS_CHANNEL || ''
+      fireAlerts: process.env.FIRE_ALERTS_CHANNEL || '1468815395719741625',
+      flowScanner: process.env.FLOW_SCANNER_CHANNEL || '1468815500200120492',
+      paperTrades: process.env.PAPER_TRADES_CHANNEL || '1468815561453469778',
+      dailyRecap: process.env.DAILY_RECAP_CHANNEL || '1468815629036556410',
+      claudeChat: process.env.CLAUDE_CHAT_CHANNEL || '1468815689140928634'
+    },
+    // Channel descriptions - what each room is for
+    channelDescriptions: {
+      fireAlerts: {
+        name: '🔥 Fire Alerts',
+        emoji: '🔥',
+        description: 'FIRE ALERT (90+) and STRONG BUY (80+) signals only. This is your main action channel - when you see alerts here, pay attention! These are the highest conviction trades with multiple confirming signals.',
+        threshold: '80+ Heat Score'
+      },
+      flowScanner: {
+        name: '📊 Flow Scanner',
+        emoji: '📊',
+        description: 'Regular flow alerts (60-79 heat score), volume spikes, momentum surges, and sector updates. Good signals that may need additional confirmation before acting.',
+        threshold: '60-79 Heat Score'
+      },
+      paperTrades: {
+        name: '💰 Paper Trades',
+        emoji: '💰',
+        description: 'Paper trade entries, exits, trailing stop updates, and proximity alerts. Track simulated trades without risking real money. Perfect for testing strategies.',
+        threshold: 'N/A'
+      },
+      dailyRecap: {
+        name: '📈 Daily Recap',
+        emoji: '📈',
+        description: 'End-of-day summaries, performance stats, top movers, and win/loss tracking. Review your daily performance and learn from patterns.',
+        threshold: 'N/A'
+      },
+      claudeChat: {
+        name: '🤖 Claude Chat',
+        emoji: '🤖',
+        description: 'Ask Claude AI trading questions using /ask or @mention the bot. Get explanations about signals, trading concepts, market mechanics, and strategy ideas.',
+        threshold: 'N/A'
+      }
     }
   },
 

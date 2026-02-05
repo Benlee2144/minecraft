@@ -87,6 +87,11 @@ class DiscordCommands {
       .setName('clear')
       .setDescription('Clear your conversation history with Claude');
 
+    // /rooms command (show channel descriptions)
+    const roomsCommand = new SlashCommandBuilder()
+      .setName('rooms')
+      .setDescription('Show what each channel is for');
+
     this.commands = [
       watchlistCommand,
       flowCommand,
@@ -94,7 +99,8 @@ class DiscordCommands {
       statsCommand,
       statusCommand,
       askCommand,
-      clearCommand
+      clearCommand,
+      roomsCommand
     ];
   }
 
@@ -154,6 +160,9 @@ class DiscordCommands {
           break;
         case 'clear':
           await this.handleClear(interaction);
+          break;
+        case 'rooms':
+          await this.handleRooms(interaction);
           break;
         default:
           await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -333,6 +342,12 @@ class DiscordCommands {
       content: 'Your conversation history with Claude has been cleared.',
       ephemeral: true
     });
+  }
+
+  // Handle /rooms command
+  async handleRooms(interaction) {
+    const embed = formatters.formatRoomDescriptions(config.discord.channelDescriptions);
+    await interaction.reply({ embeds: [embed] });
   }
 }
 
