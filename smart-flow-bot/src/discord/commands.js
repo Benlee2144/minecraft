@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 const database = require('../database/sqlite');
 const formatters = require('./formatters');
 const heatScore = require('../detection/heatScore');
+const claudeChat = require('../claude/chat');
 
 class DiscordCommands {
   constructor() {
@@ -70,12 +71,30 @@ class DiscordCommands {
       .setName('status')
       .setDescription('Show bot connection status');
 
+    // /ask command (Claude AI)
+    const askCommand = new SlashCommandBuilder()
+      .setName('ask')
+      .setDescription('Ask Claude AI a trading question')
+      .addStringOption(option =>
+        option
+          .setName('question')
+          .setDescription('Your question about trading, stocks, or market mechanics')
+          .setRequired(true)
+      );
+
+    // /clear command (clear Claude conversation)
+    const clearCommand = new SlashCommandBuilder()
+      .setName('clear')
+      .setDescription('Clear your conversation history with Claude');
+
     this.commands = [
       watchlistCommand,
       flowCommand,
       hotCommand,
       statsCommand,
-      statusCommand
+      statusCommand,
+      askCommand,
+      clearCommand
     ];
   }
 
@@ -129,6 +148,12 @@ class DiscordCommands {
           break;
         case 'status':
           await this.handleStatus(interaction);
+          break;
+        case 'ask':
+          await this.handleAsk(interaction);
+          break;
+        case 'clear':
+          await this.handleClear(interaction);
           break;
         default:
           await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -250,6 +275,64 @@ class DiscordCommands {
   // Set callback for status
   setStatusCallback(callback) {
     this.getStatusCallback = callback;
+  }
+
+  // Handle /ask command (Claude AI)
+  async handleAsk(interaction) {
+    if (!claudeChat.isEnabled()) {
+      await interaction.reply({
+        content: 'Claude CLI not found. To enable:\n```\nnpm install -g @anthropic-ai/claude-code\nclaude /login\n```\nThen restart the bot.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply();
+
+    const question = interaction.options.getString('question');
+    const userId = interaction.user.id;
+
+    try {
+      // Get context for Claude
+      const recentAlerts = database.getTodayAlerts().slice(0, 5);
+      const marketStatus = this.getStatusCallback ? this.getStatusCallback().marketStatus : null;
+
+      // Send to Claude
+      const result = await claudeChat.chat(userId, question, {
+        recentAlerts,
+        marketStatus
+      });
+
+      if (result.success) {
+        // Split response if too long
+        const response = result.response;
+        if (response.length <= 2000) {
+          await interaction.editReply(response);
+        } else {
+          // Split and send multiple messages
+          const chunks = response.match(/[\s\S]{1,1900}/g) || [];
+          await interaction.editReply(chunks[0]);
+          for (let i = 1; i < chunks.length; i++) {
+            await interaction.followUp(chunks[i]);
+          }
+        }
+      } else {
+        await interaction.editReply(`Sorry, I couldn't process that: ${result.error}`);
+      }
+    } catch (error) {
+      logger.error('Error handling /ask command', { error: error.message });
+      await interaction.editReply('Sorry, something went wrong. Please try again.');
+    }
+  }
+
+  // Handle /clear command
+  async handleClear(interaction) {
+    const userId = interaction.user.id;
+    claudeChat.clearHistory(userId);
+    await interaction.reply({
+      content: 'Your conversation history with Claude has been cleared.',
+      ephemeral: true
+    });
   }
 }
 

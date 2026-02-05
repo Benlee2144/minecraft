@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 const commands = require('./commands');
 const formatters = require('./formatters');
 const database = require('../database/sqlite');
+const claudeChat = require('../claude/chat');
 
 class DiscordBot {
   constructor() {
@@ -28,9 +29,13 @@ class DiscordBot {
       this.client = new Client({
         intents: [
           GatewayIntentBits.Guilds,
-          GatewayIntentBits.GuildMessages
+          GatewayIntentBits.GuildMessages,
+          GatewayIntentBits.MessageContent  // Required for reading message content
         ]
       });
+
+      // Initialize Claude chat service
+      claudeChat.initialize();
 
       this.client.once(Events.ClientReady, async (client) => {
         logger.info(`Discord bot logged in as ${client.user.tag}`);
@@ -60,6 +65,11 @@ class DiscordBot {
       this.client.on(Events.InteractionCreate, async (interaction) => {
         if (!interaction.isChatInputCommand()) return;
         await commands.handleCommand(interaction);
+      });
+
+      // Handle messages (for Claude chat)
+      this.client.on(Events.MessageCreate, async (message) => {
+        await this.handleMessage(message);
       });
 
       // Handle errors
@@ -241,6 +251,79 @@ class DiscordBot {
   // Set status callback (called from main index)
   setStatusCallback(callback) {
     this.statusCallback = callback;
+  }
+
+  // Handle incoming messages for Claude chat
+  async handleMessage(message) {
+    // Ignore messages from bots
+    if (message.author.bot) return;
+
+    // Check if Claude chat is enabled
+    if (!claudeChat.isEnabled()) return;
+
+    // Check if the bot was mentioned or message starts with !ask
+    const botMentioned = message.mentions.has(this.client.user);
+    const askCommand = message.content.toLowerCase().startsWith('!ask ');
+    const clearCommand = message.content.toLowerCase() === '!clear';
+
+    if (!botMentioned && !askCommand && !clearCommand) return;
+
+    // Handle clear command
+    if (clearCommand) {
+      claudeChat.clearHistory(message.author.id);
+      await message.reply('Conversation history cleared!');
+      return;
+    }
+
+    // Extract the actual question
+    let question = message.content;
+    if (botMentioned) {
+      // Remove the mention from the message
+      question = question.replace(/<@!?\d+>/g, '').trim();
+    } else if (askCommand) {
+      // Remove the !ask prefix
+      question = question.slice(5).trim();
+    }
+
+    // Ignore empty questions
+    if (!question) {
+      await message.reply('What would you like to ask? Try: `!ask what is RVOL?`');
+      return;
+    }
+
+    // Show typing indicator
+    await message.channel.sendTyping();
+
+    try {
+      // Get recent alerts for context
+      const recentAlerts = database.getTodayAlerts().slice(0, 5);
+      const marketStatus = this.statusCallback ? this.statusCallback().marketStatus : null;
+
+      // Send to Claude
+      const result = await claudeChat.chat(message.author.id, question, {
+        recentAlerts,
+        marketStatus
+      });
+
+      if (result.success) {
+        // Split response if too long for Discord
+        const response = result.response;
+        if (response.length <= 2000) {
+          await message.reply(response);
+        } else {
+          // Split into chunks
+          const chunks = response.match(/[\s\S]{1,1900}/g) || [];
+          for (const chunk of chunks) {
+            await message.reply(chunk);
+          }
+        }
+      } else {
+        await message.reply(`Sorry, I couldn't process that: ${result.error}`);
+      }
+    } catch (error) {
+      logger.error('Error handling Claude chat message', { error: error.message });
+      await message.reply('Sorry, something went wrong. Please try again.');
+    }
   }
 
   // Check if a user has a ticker on their watchlist

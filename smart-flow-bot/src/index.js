@@ -5,10 +5,8 @@ const logger = require('./utils/logger');
 const marketHours = require('./utils/marketHours');
 const database = require('./database/sqlite');
 const polygonRest = require('./polygon/rest');
-const polygonWs = require('./polygon/websocket');
 
 // Stock Detection modules
-const stockSignals = require('./detection/stockSignals');
 const stockHeatScore = require('./detection/stockHeatScore');
 
 // Discord
@@ -19,14 +17,18 @@ class SmartStockScanner {
     this.isRunning = false;
     this.isMonitoring = false;
     this.marketCheckInterval = null;
-    this.signalBuffer = new Map(); // Buffer signals to avoid spam
-    this.lastAlertTime = new Map(); // Throttle alerts per ticker
-    this.alertCooldownMs = 30000; // 30 second cooldown per ticker
+    this.pollingInterval = null;
+    this.lastSnapshots = new Map(); // Track previous snapshots for change detection
+    this.volumeBaselines = new Map();
+    this.previousCloses = new Map();
+    this.alertCooldowns = new Map(); // Throttle alerts per ticker
+    this.alertCooldownMs = 60000; // 60 second cooldown per ticker (polling is slower)
+    this.pollIntervalMs = 30000; // Poll every 30 seconds
   }
 
   async start() {
     logger.info('='.repeat(50));
-    logger.info('Starting Smart Stock Scanner...');
+    logger.info('Starting Smart Stock Scanner (REST API Mode)...');
     logger.info('='.repeat(50));
 
     try {
@@ -34,13 +36,13 @@ class SmartStockScanner {
       logger.info('Initializing database...');
       database.initialize();
 
-      // Initialize stock signal detector
-      logger.info('Initializing stock signal detector...');
-      stockSignals.initialize();
-
       // Load volume baselines
       logger.info('Loading volume baselines...');
       await this.loadVolumeBaselines();
+
+      // Load previous closes for gap detection
+      logger.info('Loading previous closes...');
+      await this.loadPreviousCloses();
 
       // Initialize Discord bot
       logger.info('Initializing Discord bot...');
@@ -49,12 +51,14 @@ class SmartStockScanner {
       // Set status callback for Discord
       discordBot.setStatusCallback(() => this.getStatus());
 
-      // Connect to Polygon WebSocket
-      logger.info('Connecting to Polygon WebSocket (Stocks)...');
-      await this.connectPolygon();
-
-      // Set up event handlers
-      this.setupEventHandlers();
+      // Verify Polygon API connection
+      logger.info('Verifying Polygon API connection...');
+      const marketStatus = await polygonRest.getMarketStatus();
+      if (marketStatus) {
+        logger.info('Polygon API connected successfully', { market: marketStatus.market });
+      } else {
+        throw new Error('Failed to connect to Polygon API');
+      }
 
       // Start market hours check
       this.startMarketHoursCheck();
@@ -67,13 +71,14 @@ class SmartStockScanner {
 
       logger.info('='.repeat(50));
       logger.info('Smart Stock Scanner is now running!');
-      logger.info(`Monitoring ${config.topTickers.length} tickers`);
+      logger.info(`Monitoring ${config.topTickers.length} tickers via REST API`);
+      logger.info(`Polling interval: ${this.pollIntervalMs / 1000} seconds`);
       logger.info(`Market status: ${marketHours.isMarketOpen() ? 'OPEN' : 'CLOSED'}`);
       logger.info('='.repeat(50));
 
       // If market is open, start monitoring
       if (marketHours.isMarketOpen()) {
-        this.startMonitoring();
+        await this.startMonitoring();
       } else {
         const timeUntilOpen = marketHours.getTimeUntilOpen();
         const hoursUntil = Math.floor(timeUntilOpen / 3600000);
@@ -93,81 +98,53 @@ class SmartStockScanner {
 
     // Check if we have recent baselines in the database
     const existingBaselines = database.getAllVolumeBaselines();
-    const needsRefresh = existingBaselines.length < config.topTickers.length * 0.8;
+    const needsRefresh = existingBaselines.length < config.topTickers.length * 0.5;
 
     if (needsRefresh) {
       logger.info('Refreshing volume baselines from Polygon...');
-      const baselines = await polygonRest.fetchVolumeBaselines(config.topTickers.slice(0, 100)); // Limit for API rate
+      const baselines = await polygonRest.fetchVolumeBaselines(config.topTickers.slice(0, 50)); // Limit for API rate
 
       for (const [ticker, avgVolume] of Object.entries(baselines)) {
-        stockSignals.setBaseline(ticker, avgVolume);
+        this.volumeBaselines.set(ticker, avgVolume);
       }
 
-      logger.info(`Loaded ${Object.keys(baselines).length} volume baselines`);
+      logger.info(`Loaded ${Object.keys(baselines).length} volume baselines from API`);
     } else {
       logger.info(`Using ${existingBaselines.length} cached volume baselines`);
       for (const { ticker, avg_daily_volume } of existingBaselines) {
-        stockSignals.setBaseline(ticker, avg_daily_volume);
+        this.volumeBaselines.set(ticker, avg_daily_volume);
       }
     }
   }
 
-  async connectPolygon() {
-    await polygonWs.connect();
+  async loadPreviousCloses() {
+    logger.info('Fetching previous closes for gap detection...');
 
-    // Wait for authentication
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Polygon authentication timeout'));
-      }, 30000);
-
-      polygonWs.once('authenticated', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-
-      polygonWs.once('auth_failed', (message) => {
-        clearTimeout(timeout);
-        reject(new Error(`Polygon auth failed: ${message}`));
-      });
-    });
-  }
-
-  setupEventHandlers() {
-    // Handle stock trades
-    polygonWs.on('trade', (trade) => {
-      if (trade.type === 'stock_trade') {
-        this.processStockTrade(trade);
+    // Get previous closes in batches
+    const batchSize = 20;
+    for (let i = 0; i < config.topTickers.length && i < 50; i += batchSize) {
+      const batch = config.topTickers.slice(i, i + batchSize);
+      for (const ticker of batch) {
+        const prevClose = await polygonRest.getPreviousClose(ticker);
+        if (prevClose) {
+          this.previousCloses.set(ticker, prevClose);
+        }
       }
-    });
+      await this.sleep(500); // Small delay between batches
+    }
 
-    // Handle aggregates (minute bars)
-    polygonWs.on('aggregate', (agg) => {
-      this.processAggregate(agg);
-    });
-
-    // Handle WebSocket errors
-    polygonWs.on('error', (error) => {
-      logger.error('Polygon WebSocket error', { error: error.message });
-      discordBot.sendError(error, 'Polygon WebSocket connection');
-    });
-
-    // Handle max reconnect reached
-    polygonWs.on('max_reconnect_reached', () => {
-      logger.error('Max reconnection attempts reached for Polygon');
-      discordBot.sendError(new Error('Polygon connection lost'), 'Max reconnection attempts reached');
-    });
+    logger.info(`Loaded ${this.previousCloses.size} previous closes`);
   }
 
   startMarketHoursCheck() {
     // Check market status every minute
-    this.marketCheckInterval = setInterval(() => {
+    this.marketCheckInterval = setInterval(async () => {
       const wasOpen = this.isMonitoring;
       const isOpen = marketHours.isMarketOpen();
 
       if (isOpen && !wasOpen) {
         logger.info('Market just opened! Starting monitoring...');
-        this.startMonitoring();
+        await this.startMonitoring();
       } else if (!isOpen && wasOpen) {
         logger.info('Market just closed! Stopping monitoring...');
         this.stopMonitoring();
@@ -175,26 +152,31 @@ class SmartStockScanner {
     }, 60000);
   }
 
-  startMonitoring() {
+  async startMonitoring() {
     this.isMonitoring = true;
 
-    // Subscribe to stock trades for top tickers
-    logger.info('Subscribing to stock trades...');
-    polygonWs.subscribeToStockTrades(config.topTickers.slice(0, 50)); // Limit for connection
-
-    // Subscribe to minute aggregates for volume and OHLC tracking
-    logger.info('Subscribing to minute aggregates...');
-    polygonWs.subscribeToStockAggregates(config.topTickers.slice(0, 50));
-
     // Reset daily tracking
-    stockSignals.resetDaily();
     database.cleanOldHeatHistory();
+    this.alertCooldowns.clear();
+
+    // Refresh previous closes for new day
+    await this.loadPreviousCloses();
+
+    // Start polling
+    logger.info('Starting REST API polling...');
+    this.startPolling();
 
     logger.info('Monitoring started');
   }
 
   stopMonitoring() {
     this.isMonitoring = false;
+
+    // Stop polling
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+      this.pollingInterval = null;
+    }
 
     // Send daily summary
     const stats = database.getTodayStats();
@@ -203,53 +185,216 @@ class SmartStockScanner {
     logger.info('Monitoring stopped for the day');
   }
 
-  processStockTrade(trade) {
-    try {
-      const ticker = trade.ticker;
+  startPolling() {
+    // Initial poll
+    this.pollMarketData();
 
-      // Skip if not in our monitored list
-      if (!config.topTickers.includes(ticker)) return;
-
-      // Process trade through signal detector
-      const signals = stockSignals.processTrade(trade);
-
-      // Handle any generated signals
-      if (signals && signals.length > 0) {
-        for (const signal of signals) {
-          this.evaluateSignal(signal);
-        }
+    // Set up interval for continuous polling
+    this.pollingInterval = setInterval(() => {
+      if (this.isMonitoring && marketHours.isMarketOpen()) {
+        this.pollMarketData();
       }
+    }, this.pollIntervalMs);
+  }
+
+  async pollMarketData() {
+    try {
+      logger.debug('Polling market data...');
+
+      // Get gainers and losers (these are often the most interesting)
+      const [gainers, losers] = await Promise.all([
+        polygonRest.getGainersLosers('gainers'),
+        polygonRest.getGainersLosers('losers')
+      ]);
+
+      // Process top gainers
+      for (const ticker of gainers.slice(0, 10)) {
+        await this.processSnapshot(ticker);
+      }
+
+      // Process top losers
+      for (const ticker of losers.slice(0, 10)) {
+        await this.processSnapshot(ticker);
+      }
+
+      // Also poll our specific watchlist tickers
+      const watchedTickers = discordBot.getAllWatchedTickers();
+      const tickersToCheck = [...new Set([...config.topTickers.slice(0, 20), ...watchedTickers])];
+
+      for (const ticker of tickersToCheck.slice(0, 30)) { // Limit to 30 to stay within rate limits
+        const snapshot = await polygonRest.getStockSnapshot(ticker);
+        if (snapshot) {
+          await this.processSnapshot(snapshot);
+        }
+        await this.sleep(100); // Small delay between requests
+      }
+
+      logger.debug('Polling cycle complete');
+
     } catch (error) {
-      logger.error('Error processing stock trade', { error: error.message });
+      logger.error('Error during polling', { error: error.message });
     }
   }
 
-  processAggregate(agg) {
+  async processSnapshot(tickerData) {
     try {
-      const ticker = agg.ticker;
+      // Handle both raw ticker object from gainers/losers and snapshot format
+      const snapshot = tickerData.ticker
+        ? {
+            ticker: tickerData.ticker,
+            price: tickerData.day?.c || tickerData.lastTrade?.p || tickerData.prevDay?.c,
+            open: tickerData.day?.o,
+            high: tickerData.day?.h,
+            low: tickerData.day?.l,
+            todayVolume: tickerData.day?.v || 0,
+            prevDayVolume: tickerData.prevDay?.v || 0,
+            prevDayClose: tickerData.prevDay?.c,
+            todayChange: tickerData.todaysChange,
+            todayChangePercent: tickerData.todaysChangePerc,
+            vwap: tickerData.day?.vw
+          }
+        : tickerData;
 
-      // Skip if not in our monitored list
-      if (!config.topTickers.includes(ticker)) return;
+      if (!snapshot.ticker || !snapshot.price) return;
 
-      // Process aggregate through signal detector
-      const signals = stockSignals.processAggregate(agg);
+      const ticker = snapshot.ticker;
+      const lastSnapshot = this.lastSnapshots.get(ticker);
 
-      // Handle any generated signals
-      if (signals && signals.length > 0) {
-        for (const signal of signals) {
-          this.evaluateSignal(signal);
-        }
+      // Store current snapshot for next comparison
+      this.lastSnapshots.set(ticker, { ...snapshot, timestamp: Date.now() });
+
+      // Detect signals
+      const signals = this.detectSignals(snapshot, lastSnapshot);
+
+      // Process any detected signals
+      for (const signal of signals) {
+        await this.evaluateSignal(signal);
       }
+
     } catch (error) {
-      logger.error('Error processing aggregate', { error: error.message });
+      logger.error('Error processing snapshot', { error: error.message, ticker: tickerData?.ticker });
     }
+  }
+
+  detectSignals(snapshot, lastSnapshot) {
+    const signals = [];
+    const ticker = snapshot.ticker;
+    const avgVolume = this.volumeBaselines.get(ticker) || snapshot.prevDayVolume || 1;
+    const prevClose = this.previousCloses.get(ticker)?.close || snapshot.prevDayClose;
+
+    // 1. Volume Spike Detection (RVOL)
+    if (snapshot.todayVolume > 0 && avgVolume > 0) {
+      const rvol = snapshot.todayVolume / avgVolume;
+      const minutesSinceOpen = marketHours.getMinutesSinceOpen();
+
+      // Normalize for time of day (expected volume)
+      const expectedRvol = minutesSinceOpen / 390; // 390 minutes in trading day
+      const adjustedRvol = expectedRvol > 0 ? rvol / expectedRvol : rvol;
+
+      if (adjustedRvol >= 3.0) {
+        signals.push({
+          type: 'volume_spike',
+          ticker,
+          price: snapshot.price,
+          rvol: adjustedRvol,
+          currentVolume: snapshot.todayVolume,
+          avgVolume,
+          severity: adjustedRvol >= 5.0 ? 'extreme' : 'high',
+          description: `${adjustedRvol.toFixed(1)}x relative volume (adjusted for time)`
+        });
+      }
+    }
+
+    // 2. Price Change / Momentum Detection
+    if (snapshot.todayChangePercent !== undefined) {
+      const changePercent = Math.abs(snapshot.todayChangePercent);
+
+      if (changePercent >= 5) {
+        signals.push({
+          type: 'momentum_surge',
+          ticker,
+          price: snapshot.price,
+          priceChange: snapshot.todayChangePercent,
+          direction: snapshot.todayChangePercent > 0 ? 'up' : 'down',
+          severity: changePercent >= 10 ? 'extreme' : 'high',
+          description: `${snapshot.todayChangePercent > 0 ? '+' : ''}${snapshot.todayChangePercent.toFixed(2)}% move today`
+        });
+      }
+    }
+
+    // 3. Gap Detection (comparing open to previous close)
+    if (snapshot.open && prevClose) {
+      const gapPercent = ((snapshot.open - prevClose) / prevClose) * 100;
+
+      if (Math.abs(gapPercent) >= 3) {
+        signals.push({
+          type: 'gap',
+          ticker,
+          price: snapshot.price,
+          gapPercent,
+          gapSize: snapshot.open - prevClose,
+          previousClose: prevClose,
+          openPrice: snapshot.open,
+          direction: gapPercent > 0 ? 'up' : 'down',
+          severity: Math.abs(gapPercent) >= 5 ? 'high' : 'medium',
+          description: `${gapPercent > 0 ? '+' : ''}${gapPercent.toFixed(2)}% gap ${gapPercent > 0 ? 'up' : 'down'}`
+        });
+      }
+    }
+
+    // 4. New High/Low Detection
+    if (snapshot.price && snapshot.high && snapshot.low) {
+      // New intraday high
+      if (lastSnapshot && snapshot.high > (lastSnapshot.high || 0) && snapshot.price >= snapshot.high * 0.998) {
+        signals.push({
+          type: 'new_high',
+          ticker,
+          price: snapshot.price,
+          high: snapshot.high,
+          severity: 'medium',
+          description: `New intraday high at $${snapshot.high.toFixed(2)}`
+        });
+      }
+
+      // New intraday low
+      if (lastSnapshot && snapshot.low < (lastSnapshot.low || Infinity) && snapshot.price <= snapshot.low * 1.002) {
+        signals.push({
+          type: 'new_low',
+          ticker,
+          price: snapshot.price,
+          low: snapshot.low,
+          severity: 'medium',
+          description: `New intraday low at $${snapshot.low.toFixed(2)}`
+        });
+      }
+    }
+
+    // 5. VWAP Cross Detection
+    if (snapshot.vwap && snapshot.price && lastSnapshot?.price) {
+      const wasAboveVwap = lastSnapshot.price > lastSnapshot.vwap;
+      const isAboveVwap = snapshot.price > snapshot.vwap;
+
+      if (wasAboveVwap !== isAboveVwap) {
+        signals.push({
+          type: 'vwap_cross',
+          ticker,
+          price: snapshot.price,
+          vwap: snapshot.vwap,
+          direction: isAboveVwap ? 'above' : 'below',
+          severity: 'medium',
+          description: `Price crossed ${isAboveVwap ? 'above' : 'below'} VWAP ($${snapshot.vwap.toFixed(2)})`
+        });
+      }
+    }
+
+    return signals;
   }
 
   async evaluateSignal(signal) {
     const ticker = signal.ticker;
 
     // Check cooldown
-    const lastAlert = this.lastAlertTime.get(ticker) || 0;
+    const lastAlert = this.alertCooldowns.get(ticker) || 0;
     const timeSinceLastAlert = Date.now() - lastAlert;
 
     if (timeSinceLastAlert < this.alertCooldownMs) {
@@ -257,14 +402,13 @@ class SmartStockScanner {
       return;
     }
 
-    // Get context for heat score calculation
+    // Calculate heat score
     const context = {
-      hasVolumeSpike: signal.hasVolumeSpike || false,
+      hasVolumeSpike: signal.type === 'volume_spike' || signal.rvol > 0,
       volumeMultiple: signal.rvol || 0,
-      priceChange: signal.priceChange || 0
+      priceChange: signal.priceChange || signal.todayChangePercent || 0
     };
 
-    // Calculate heat score
     const heatResult = stockHeatScore.calculate(signal, context);
 
     // Check if meets threshold
@@ -284,7 +428,7 @@ class SmartStockScanner {
     }
 
     // Update cooldown
-    this.lastAlertTime.set(ticker, Date.now());
+    this.alertCooldowns.set(ticker, Date.now());
 
     // Log the signal
     logger.flow(ticker, heatResult.heatScore, heatResult.breakdown);
@@ -298,26 +442,31 @@ class SmartStockScanner {
       signalType: signal.type,
       heatScore: heatResult.heatScore,
       price: signal.price,
-      volume: signal.volume || signal.currentVolume || 0,
+      volume: signal.currentVolume || 0,
       signalBreakdown: heatResult.breakdown,
       channel: heatResult.channel
     });
 
     // Add to heat history for tracking
-    database.addHeatSignal(ticker, signal.type, signal.tradeValue || signal.volume || 0);
+    database.addHeatSignal(ticker, signal.type, signal.currentVolume || 0);
   }
 
   getStatus() {
     return {
-      polygonConnected: polygonWs.isConnected,
-      polygonAuthenticated: polygonWs.isAuthenticated,
+      polygonConnected: true, // REST API is stateless
+      polygonAuthenticated: true,
       tickersMonitored: config.topTickers.length,
-      baselinesLoaded: stockSignals.volumeBaselines?.size || 0,
+      baselinesLoaded: this.volumeBaselines.size,
       marketOpen: marketHours.isMarketOpen(),
-      isMonitoring: this.isMonitoring || false,
+      isMonitoring: this.isMonitoring,
       uptime: process.uptime(),
-      dataSource: 'Stocks (Real-time)'
+      dataSource: 'REST API (Polling)',
+      pollInterval: `${this.pollIntervalMs / 1000}s`
     };
+  }
+
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async shutdown() {
@@ -329,9 +478,11 @@ class SmartStockScanner {
       clearInterval(this.marketCheckInterval);
     }
 
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+    }
+
     // Shutdown components
-    stockSignals.shutdown();
-    polygonWs.close();
     await discordBot.shutdown();
     database.close();
 

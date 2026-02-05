@@ -6,6 +6,9 @@ module.exports = {
     restUrl: 'https://api.polygon.io'
   },
 
+  // Claude Chat uses Claude Code CLI (your Max subscription) - no API key needed
+  // Just run: npm install -g @anthropic-ai/claude-code && claude /login
+
   discord: {
     token: process.env.DISCORD_BOT_TOKEN || '',
     // Channel IDs - Update these after creating your Discord server
