@@ -1245,8 +1245,10 @@ class SmartStockScanner {
         const squeeze = squeezeDetection.detectSqueeze(ticker);
         if (squeeze && squeeze.squeezeScore >= 75) {
           const message = squeezeDetection.formatSqueezeAlert(squeeze);
-          await discordBot.sendMessage('flowScanner', message);
-          logger.info(`Squeeze detected: ${ticker} (score: ${squeeze.squeezeScore})`);
+          // Route to fire-alerts if score >= 80, otherwise flow-scanner
+          const channel = squeeze.squeezeScore >= 80 ? 'fireAlerts' : 'flowScanner';
+          await discordBot.sendMessage(channel, message);
+          logger.info(`Squeeze detected: ${ticker} (score: ${squeeze.squeezeScore}) -> ${channel}`);
         }
 
         // Check for patterns
@@ -1259,8 +1261,10 @@ class SmartStockScanner {
         for (const pattern of patterns) {
           if (pattern.confidence >= 70) {
             const message = patternRecognition.formatPatternAlert(pattern);
-            await discordBot.sendMessage('flowScanner', message);
-            logger.info(`Pattern detected: ${ticker} - ${pattern.type}`);
+            // Route to fire-alerts if confidence >= 80, otherwise flow-scanner
+            const channel = pattern.confidence >= 80 ? 'fireAlerts' : 'flowScanner';
+            await discordBot.sendMessage(channel, message);
+            logger.info(`Pattern detected: ${ticker} - ${pattern.type} (${pattern.confidence}%) -> ${channel}`);
           }
         }
       }
