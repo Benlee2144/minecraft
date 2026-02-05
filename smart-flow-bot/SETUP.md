@@ -25,47 +25,52 @@ Starting Smart Stock Scanner (REST API Mode)...
 
 ---
 
-## Step 3: (Optional) Add Claude AI via OpenClaw
+## Step 3: (Optional) Add Claude AI Chat
 
-OpenClaw lets you use your Claude Max subscription through Discord.
+Chat with Claude directly in Discord! Ask trading questions, get explanations of signals, etc.
 
-### Install OpenClaw on Mac:
+### Get a Free API Key:
 
-```bash
-# Install via Homebrew
-brew install openclaw/tap/openclaw
+1. Go to: https://console.anthropic.com
+2. Create an account (free)
+3. Go to API Keys and create a new key
+4. Copy the key (starts with `sk-ant-api...`)
 
-# Or via npm
-npm install -g @openclaw/cli
-```
+### Add to Your Bot:
 
-### Configure OpenClaw:
-
-```bash
-# Generate a setup token from Claude Code
-claude setup-token
-
-# Copy the token, then paste it into OpenClaw
-openclaw models auth paste-token --provider anthropic
-
-# Connect to Discord
-openclaw channels add discord
-```
-
-### Start OpenClaw:
+Create a `.env` file in your smart-flow-bot folder:
 
 ```bash
-openclaw start
+cd ~/smart-flow-bot
+echo "ANTHROPIC_API_KEY=sk-ant-api03-YOUR-KEY-HERE" >> .env
 ```
+
+Or export it directly:
+```bash
+export ANTHROPIC_API_KEY=sk-ant-api03-YOUR-KEY-HERE
+```
+
+### Restart the Bot:
+
+```bash
+npm start
+```
+
+### How to Use Claude in Discord:
+
+- **Slash command**: `/ask what is RVOL?`
+- **Mention the bot**: `@YourBot what does a volume spike mean?`
+- **!ask prefix**: `!ask explain momentum trading`
+- **Clear history**: `/clear` or `!clear`
 
 ---
 
 ## What Each Part Does:
 
-| Component | Purpose | Needs AI? |
-|-----------|---------|-----------|
-| Stock Scanner Bot | Detects volume spikes, momentum, gaps | NO (math only) |
-| OpenClaw (optional) | Chat with Claude in Discord | YES (your Claude Max) |
+| Component | Purpose | Needs API Key? |
+|-----------|---------|----------------|
+| Stock Scanner Bot | Detects volume spikes, momentum, gaps | Polygon (included) |
+| Claude Chat (optional) | Ask Claude questions in Discord | Anthropic (free tier) |
 
 ---
 
@@ -78,6 +83,7 @@ openclaw start
 - Normal outside market hours (9:30 AM - 4:00 PM ET)
 - Bot will auto-start monitoring when market opens
 
-**OpenClaw not finding Claude**
-- Make sure you ran `claude setup-token` first
-- Verify your Claude Max subscription is active
+**"Claude AI is not configured"**
+- You need an Anthropic API key (free tier available)
+- Get one at: https://console.anthropic.com
+- Add it as `ANTHROPIC_API_KEY` environment variable
