@@ -229,6 +229,62 @@ class KeyLevels {
     return proximity;
   }
 
+  // Get context for trade recommendation (support/resistance analysis)
+  getContext(ticker, price) {
+    const levels = this.getLevels(ticker);
+    if (!levels || !price) return null;
+
+    const context = {
+      nearLevel: false,
+      levelType: null,
+      levelName: null,
+      levelPrice: null,
+      distancePercent: null,
+      breaking: false
+    };
+
+    // Check PDH (resistance)
+    if (levels.pdh) {
+      const dist = ((price - levels.pdh) / levels.pdh) * 100;
+      if (Math.abs(dist) < 2) {
+        context.nearLevel = true;
+        context.levelType = 'resistance';
+        context.levelName = 'PDH';
+        context.levelPrice = levels.pdh;
+        context.distancePercent = dist;
+        context.breaking = dist > 0;
+      }
+    }
+
+    // Check PDL (support)
+    if (levels.pdl && !context.nearLevel) {
+      const dist = ((price - levels.pdl) / levels.pdl) * 100;
+      if (Math.abs(dist) < 2) {
+        context.nearLevel = true;
+        context.levelType = 'support';
+        context.levelName = 'PDL';
+        context.levelPrice = levels.pdl;
+        context.distancePercent = dist;
+        context.breaking = dist < 0;
+      }
+    }
+
+    // Check VWAP
+    if (levels.vwap && !context.nearLevel) {
+      const dist = ((price - levels.vwap) / levels.vwap) * 100;
+      if (Math.abs(dist) < 1.5) {
+        context.nearLevel = true;
+        context.levelType = price > levels.vwap ? 'support' : 'resistance';
+        context.levelName = 'VWAP';
+        context.levelPrice = levels.vwap;
+        context.distancePercent = dist;
+        context.breaking = false;
+      }
+    }
+
+    return context.nearLevel ? context : null;
+  }
+
   // Format levels for display in alerts
   formatLevelsForAlert(ticker) {
     const levels = this.getLevels(ticker);
