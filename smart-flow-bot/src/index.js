@@ -495,15 +495,15 @@ class SmartStockScanner {
       });
 
       // Subscribe to stock trades and aggregates for our watchlist
+      // Starter plan has limits - only subscribe to top tickers
       const tickersToStream = [...new Set([
-        ...config.topTickers.slice(0, 50), // Top 50 most liquid
+        ...config.topTickers.slice(0, 15), // Top 15 most liquid (Starter plan limit)
         ...discordBot.getAllWatchedTickers()
-      ])];
+      ])].slice(0, 20); // Max 20 tickers total
 
       logger.info(`Subscribing to real-time data for ${tickersToStream.length} tickers...`);
 
-      // Subscribe to trades (T.*) and minute aggregates (AM.*)
-      polygonWS.subscribeToStockTrades(tickersToStream);
+      // Subscribe to minute aggregates only (trades would double the subscriptions)
       polygonWS.subscribeToStockAggregates(tickersToStream);
 
       logger.info('⚡ WebSocket connected and streaming real-time data!');
@@ -691,11 +691,10 @@ class SmartStockScanner {
     if (!this.wsConnected) return;
 
     const tickersToStream = [...new Set([
-      ...config.topTickers.slice(0, 50),
+      ...config.topTickers.slice(0, 15),
       ...discordBot.getAllWatchedTickers()
-    ])];
+    ])].slice(0, 20); // Max 20 for Starter plan
 
-    polygonWS.subscribeToStockTrades(tickersToStream);
     polygonWS.subscribeToStockAggregates(tickersToStream);
     logger.info(`Updated WebSocket subscriptions: ${tickersToStream.length} tickers`);
   }
