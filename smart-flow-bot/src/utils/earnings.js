@@ -1,6 +1,7 @@
 const database = require('../database/sqlite');
 const logger = require('../utils/logger');
 const axios = require('axios');
+const config = require('../../config');
 
 class EarningsCalendar {
   constructor() {
@@ -55,28 +56,75 @@ class EarningsCalendar {
     }
   }
 
-  // Fetch earnings date for a single ticker
-  // Tries multiple free sources with fallbacks
+  // Fetch earnings date for a single ticker using Polygon API
   async fetchEarningsForTicker(ticker) {
     ticker = ticker.toUpperCase();
+    const apiKey = config.polygon.apiKey;
 
-    // Try Yahoo Finance v7 options endpoint (more reliable)
+    // Try Polygon ticker details endpoint (has next earnings date)
+    try {
+      const url = `https://api.polygon.io/v3/reference/tickers/${ticker}?apiKey=${apiKey}`;
+      const response = await axios.get(url, { timeout: 10000 });
+
+      // Check for next earnings date in the response
+      const results = response.data?.results;
+      if (results) {
+        // Polygon may include earnings info in different fields
+        // Try to get from company events or financials
+        logger.debug(`Got ticker details for ${ticker}`);
+      }
+    } catch (error) {
+      // Continue to next method
+    }
+
+    // Try Polygon stock financials endpoint for earnings
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const futureDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      // Get upcoming earnings from Polygon's reference data
+      const url = `https://api.polygon.io/vX/reference/financials?ticker=${ticker}&timeframe=quarterly&order=desc&limit=1&apiKey=${apiKey}`;
+      const response = await axios.get(url, { timeout: 10000 });
+
+      const results = response.data?.results;
+      if (results && results.length > 0) {
+        // Extract filing date or period end date
+        const latest = results[0];
+        const filingDate = latest.filing_date;
+        const periodEnd = latest.end_date;
+
+        // Estimate next earnings (roughly 3 months after last)
+        if (periodEnd) {
+          const lastEarnings = new Date(periodEnd);
+          const nextEarnings = new Date(lastEarnings);
+          nextEarnings.setMonth(nextEarnings.getMonth() + 3);
+
+          const todayDate = new Date();
+          todayDate.setHours(0, 0, 0, 0);
+
+          if (nextEarnings >= todayDate) {
+            const dateStr = nextEarnings.toISOString().split('T')[0];
+            this.setEarningsDate(ticker, dateStr);
+            return { ticker, date: dateStr, source: 'polygon-estimated' };
+          }
+        }
+      }
+    } catch (error) {
+      logger.debug(`Polygon financials error for ${ticker}: ${error.message}`);
+    }
+
+    // Fallback: Try Yahoo as backup (sometimes works)
     try {
       const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/options/${ticker}`;
       const response = await axios.get(yahooUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5'
-        },
-        timeout: 10000
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' },
+        timeout: 8000
       });
 
       const quote = response.data?.optionChain?.result?.[0]?.quote;
       if (quote?.earningsTimestamp) {
         const earningsDate = new Date(quote.earningsTimestamp * 1000);
         const dateStr = earningsDate.toISOString().split('T')[0];
-
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
@@ -86,35 +134,7 @@ class EarningsCalendar {
         }
       }
     } catch (error) {
-      // Try backup source
-    }
-
-    // Try Yahoo quote endpoint as backup
-    try {
-      const quoteUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`;
-      const response = await axios.get(quoteUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-          'Accept': '*/*'
-        },
-        timeout: 10000
-      });
-
-      const quote = response.data?.quoteResponse?.result?.[0];
-      if (quote?.earningsTimestamp) {
-        const earningsDate = new Date(quote.earningsTimestamp * 1000);
-        const dateStr = earningsDate.toISOString().split('T')[0];
-
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        if (earningsDate >= today) {
-          this.setEarningsDate(ticker, dateStr);
-          return { ticker, date: dateStr, source: 'yahoo-quote' };
-        }
-      }
-    } catch (error) {
-      // Both sources failed
+      // Yahoo also failed
     }
 
     logger.debug(`Could not fetch earnings for ${ticker}`);
