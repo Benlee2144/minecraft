@@ -11,11 +11,19 @@ class DiscordBot {
     this.client = null;
     this.isReady = false;
     this.channels = {
+      // New organized channels
+      fireAlerts: null,     // High confidence signals (80+)
+      flowScanner: null,    // Regular flow alerts
+      paperTrades: null,    // Paper trade activity
+      dailyRecap: null,     // End of day summaries
+      claudeChat: null,     // Claude AI responses
+      // Legacy (mapped to new)
       highConviction: null,
       flowAlerts: null,
       botStatus: null
     };
     this.statusCallback = null;
+    this.welcomesSent = false;
   }
 
   async initialize() {
@@ -87,20 +95,36 @@ class DiscordBot {
 
   async cacheChannels() {
     try {
-      if (config.discord.channels.highConviction) {
-        this.channels.highConviction = await this.client.channels.fetch(config.discord.channels.highConviction);
-        logger.info('Cached high-conviction channel');
+      // Cache new organized channels
+      if (config.discord.channels.fireAlerts) {
+        this.channels.fireAlerts = await this.client.channels.fetch(config.discord.channels.fireAlerts);
+        this.channels.highConviction = this.channels.fireAlerts; // Legacy mapping
+        logger.info('Cached fire-alerts channel');
       }
 
-      if (config.discord.channels.flowAlerts) {
-        this.channels.flowAlerts = await this.client.channels.fetch(config.discord.channels.flowAlerts);
-        logger.info('Cached flow-alerts channel');
+      if (config.discord.channels.flowScanner) {
+        this.channels.flowScanner = await this.client.channels.fetch(config.discord.channels.flowScanner);
+        this.channels.flowAlerts = this.channels.flowScanner; // Legacy mapping
+        logger.info('Cached flow-scanner channel');
       }
 
-      if (config.discord.channels.botStatus) {
-        this.channels.botStatus = await this.client.channels.fetch(config.discord.channels.botStatus);
-        logger.info('Cached bot-status channel');
+      if (config.discord.channels.paperTrades) {
+        this.channels.paperTrades = await this.client.channels.fetch(config.discord.channels.paperTrades);
+        logger.info('Cached paper-trades channel');
       }
+
+      if (config.discord.channels.dailyRecap) {
+        this.channels.dailyRecap = await this.client.channels.fetch(config.discord.channels.dailyRecap);
+        this.channels.botStatus = this.channels.dailyRecap; // Legacy mapping
+        logger.info('Cached daily-recap channel');
+      }
+
+      if (config.discord.channels.claudeChat) {
+        this.channels.claudeChat = await this.client.channels.fetch(config.discord.channels.claudeChat);
+        logger.info('Cached claude-chat channel');
+      }
+
+      logger.info('All channels cached successfully');
     } catch (error) {
       logger.error('Failed to cache channels', { error: error.message });
     }
@@ -118,14 +142,19 @@ class DiscordBot {
       // Use the type-specific formatter
       const embed = formatters.formatAlert(signal, heatResult);
 
-      // Determine channel
-      const channel = heatResult.isHighConviction
-        ? this.channels.highConviction
-        : this.channels.flowAlerts;
+      // Route based on heat score:
+      // 80+ = Fire Alerts channel (high confidence entry signals)
+      // Below 80 = Flow Scanner channel (regular alerts)
+      const isFireAlert = heatResult.heatScore >= 80;
+      const channel = isFireAlert
+        ? this.channels.fireAlerts
+        : this.channels.flowScanner;
+
+      const channelName = isFireAlert ? 'fire-alerts' : 'flow-scanner';
 
       if (channel) {
         await channel.send({ embeds: [embed] });
-        logger.info(`Stock alert sent to ${heatResult.channel}`, {
+        logger.info(`Stock alert sent to ${channelName}`, {
           ticker: heatResult.ticker,
           signalType: signal.type,
           heatScore: heatResult.heatScore
@@ -334,6 +363,229 @@ class DiscordBot {
   // Get all watched tickers
   getAllWatchedTickers() {
     return database.getAllWatchedTickers();
+  }
+
+  // Send message to specific channel by name
+  async sendMessage(channelName, content, options = {}) {
+    if (!this.isReady) {
+      logger.info(`[${channelName}] ${typeof content === 'string' ? content : 'embed'}`);
+      return;
+    }
+
+    // Map channel names to actual channel objects
+    const channelMap = {
+      'fireAlerts': this.channels.fireAlerts,
+      'fire-alerts': this.channels.fireAlerts,
+      'flowScanner': this.channels.flowScanner,
+      'flow-scanner': this.channels.flowScanner,
+      'flowAlerts': this.channels.flowScanner,  // Legacy
+      'paperTrades': this.channels.paperTrades,
+      'paper-trades': this.channels.paperTrades,
+      'dailyRecap': this.channels.dailyRecap,
+      'daily-recap': this.channels.dailyRecap,
+      'botStatus': this.channels.dailyRecap,    // Legacy
+      'claudeChat': this.channels.claudeChat,
+      'claude-chat': this.channels.claudeChat
+    };
+
+    const channel = channelMap[channelName];
+    if (!channel) {
+      logger.warn(`Channel not found: ${channelName}`);
+      return;
+    }
+
+    try {
+      if (typeof content === 'string') {
+        await channel.send(content);
+      } else if (content.embeds || content.content) {
+        await channel.send(content);
+      } else {
+        // Assume it's an embed
+        await channel.send({ embeds: [content] });
+      }
+    } catch (error) {
+      logger.error(`Failed to send to ${channelName}`, { error: error.message });
+    }
+  }
+
+  // Send paper trade notification
+  async sendPaperTradeNotification(message, isClose = false) {
+    await this.sendMessage('paperTrades', message);
+  }
+
+  // Send daily recap
+  async sendDailyRecapEmbed(embed) {
+    await this.sendMessage('dailyRecap', { embeds: [embed] });
+  }
+
+  // Send Claude chat response
+  async sendClaudeResponse(message, response) {
+    if (!this.isReady) return;
+
+    try {
+      // If we have a claude chat channel and the message came from elsewhere, also post there
+      if (this.channels.claudeChat && message.channel.id !== this.channels.claudeChat.id) {
+        // Post a summary to claude-chat channel
+        await this.channels.claudeChat.send(`**Q:** ${message.content.slice(0, 200)}${message.content.length > 200 ? '...' : ''}\n**A:** ${response.slice(0, 500)}${response.length > 500 ? '...' : ''}`);
+      }
+    } catch (error) {
+      logger.error('Failed to send to claude-chat channel', { error: error.message });
+    }
+  }
+
+  // Send welcome messages to all channels explaining their purpose
+  async sendChannelWelcomes() {
+    if (!this.isReady || this.welcomesSent) return;
+
+    const { EmbedBuilder } = require('discord.js');
+
+    // Fire Alerts Channel
+    if (this.channels.fireAlerts) {
+      const fireEmbed = new EmbedBuilder()
+        .setTitle('Welcome to Fire Alerts')
+        .setColor(0xFF4500)
+        .setDescription('**This is your ACTION channel for high-confidence trade signals.**')
+        .addFields(
+          {
+            name: 'What Posts Here',
+            value: '- FIRE ALERT signals (90+ confidence) - **ENTER NOW** trades\n- STRONG ENTRY signals (80+ confidence)\n- Only the highest conviction opportunities',
+            inline: false
+          },
+          {
+            name: 'How to Use',
+            value: '- Pay close attention to signals here\n- These are the bot\'s best trade ideas\n- Entry price, targets, and stops are included\n- Option suggestions with expected P&L',
+            inline: false
+          },
+          {
+            name: 'Notifications',
+            value: 'Recommended: Turn on ALL notifications for this channel so you never miss a fire alert!',
+            inline: false
+          }
+        )
+        .setFooter({ text: 'Smart Flow Scanner | Fire Alerts' });
+
+      try {
+        await this.channels.fireAlerts.send({ embeds: [fireEmbed] });
+      } catch (e) { logger.error('Failed to send fire-alerts welcome', { error: e.message }); }
+    }
+
+    // Flow Scanner Channel
+    if (this.channels.flowScanner) {
+      const flowEmbed = new EmbedBuilder()
+        .setTitle('Welcome to Flow Scanner')
+        .setColor(0x3498DB)
+        .setDescription('**Your main feed for market activity and signals.**')
+        .addFields(
+          {
+            name: 'What Posts Here',
+            value: '- Regular flow alerts (60-79 heat score)\n- Volume spikes and momentum surges\n- VWAP crosses and level breaks\n- Sector heat map updates\n- Gap alerts and relative strength signals',
+            inline: false
+          },
+          {
+            name: 'How to Use',
+            value: '- Monitor for developing opportunities\n- Watch for signals that might escalate to Fire Alerts\n- Use these for market context and awareness\n- Great for watchlist ideas',
+            inline: false
+          }
+        )
+        .setFooter({ text: 'Smart Flow Scanner | Flow Scanner' });
+
+      try {
+        await this.channels.flowScanner.send({ embeds: [flowEmbed] });
+      } catch (e) { logger.error('Failed to send flow-scanner welcome', { error: e.message }); }
+    }
+
+    // Paper Trades Channel
+    if (this.channels.paperTrades) {
+      const paperEmbed = new EmbedBuilder()
+        .setTitle('Welcome to Paper Trades')
+        .setColor(0x2ECC71)
+        .setDescription('**Track the bot\'s hypothetical trades and performance.**')
+        .addFields(
+          {
+            name: 'What Posts Here',
+            value: '- Paper trade entries (when bot recommends a trade)\n- Trade exits (target hit, stopped out, trailing stop)\n- Proximity alerts (approaching target/stop)\n- Trailing stop updates (locking in profits)\n- Real-time P&L updates',
+            inline: false
+          },
+          {
+            name: 'Position Size',
+            value: 'All paper trades use $2,000 position size with ~3.5x option leverage calculation.',
+            inline: false
+          },
+          {
+            name: 'Commands',
+            value: '`/paper active` - See current open positions\n`/paper today` - Today\'s trade history\n`/paper history` - All-time performance',
+            inline: false
+          }
+        )
+        .setFooter({ text: 'Smart Flow Scanner | Paper Trades' });
+
+      try {
+        await this.channels.paperTrades.send({ embeds: [paperEmbed] });
+      } catch (e) { logger.error('Failed to send paper-trades welcome', { error: e.message }); }
+    }
+
+    // Daily Recap Channel
+    if (this.channels.dailyRecap) {
+      const recapEmbed = new EmbedBuilder()
+        .setTitle('Welcome to Daily Recap')
+        .setColor(0x9B59B6)
+        .setDescription('**End-of-day summaries and performance analytics.**')
+        .addFields(
+          {
+            name: 'What Posts Here',
+            value: '- End-of-day paper trading recap (win rate, P&L)\n- Daily scanner statistics\n- Bot startup/status messages\n- Performance breakdowns by confidence level\n- Best and worst trades of the day',
+            inline: false
+          },
+          {
+            name: 'When It Posts',
+            value: 'Recaps post automatically at market close (4:00 PM ET).',
+            inline: false
+          },
+          {
+            name: 'Commands',
+            value: '`/recap` - Get current day\'s recap\n`/stats` - View overall statistics\n`/perf` - Check signal performance',
+            inline: false
+          }
+        )
+        .setFooter({ text: 'Smart Flow Scanner | Daily Recap' });
+
+      try {
+        await this.channels.dailyRecap.send({ embeds: [recapEmbed] });
+      } catch (e) { logger.error('Failed to send daily-recap welcome', { error: e.message }); }
+    }
+
+    // Claude Chat Channel
+    if (this.channels.claudeChat) {
+      const claudeEmbed = new EmbedBuilder()
+        .setTitle('Welcome to Claude Chat')
+        .setColor(0xE67E22)
+        .setDescription('**Ask Claude AI questions about trading, the market, or the bot.**')
+        .addFields(
+          {
+            name: 'What Posts Here',
+            value: '- Claude AI responses to your questions\n- Trading strategy discussions\n- Technical analysis help\n- Explanations of signals and alerts',
+            inline: false
+          },
+          {
+            name: 'How to Use',
+            value: '`/ask [question]` - Ask Claude anything\n`!ask [question]` - Alternative command\n`@Bot [question]` - Mention the bot\n`!clear` - Clear conversation history',
+            inline: false
+          },
+          {
+            name: 'Example Questions',
+            value: '- "What does RVOL mean?"\n- "Should I trade during power hour?"\n- "Explain the heat score system"\n- "What sectors are hot today?"',
+            inline: false
+          }
+        )
+        .setFooter({ text: 'Smart Flow Scanner | Claude Chat' });
+
+      try {
+        await this.channels.claudeChat.send({ embeds: [claudeEmbed] });
+      } catch (e) { logger.error('Failed to send claude-chat welcome', { error: e.message }); }
+    }
+
+    this.welcomesSent = true;
+    logger.info('Channel welcome messages sent');
   }
 
   // Shutdown

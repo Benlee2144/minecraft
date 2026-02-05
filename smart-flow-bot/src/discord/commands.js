@@ -234,6 +234,11 @@ class DiscordCommands {
       .setName('recap')
       .setDescription("Get today's paper trading recap and performance summary");
 
+    // /welcome command (send channel welcome messages)
+    const welcomeCommand = new SlashCommandBuilder()
+      .setName('welcome')
+      .setDescription('Send welcome/info messages to all channels explaining their purpose');
+
     this.commands = [
       watchlistCommand,
       flowCommand,
@@ -250,7 +255,8 @@ class DiscordCommands {
       levelsCommand,
       spyCommand,
       paperCommand,
-      recapCommand
+      recapCommand,
+      welcomeCommand
     ];
   }
 
@@ -337,6 +343,9 @@ class DiscordCommands {
           break;
         case 'recap':
           await this.handleRecap(interaction);
+          break;
+        case 'welcome':
+          await this.handleWelcome(interaction);
           break;
         default:
           await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -1214,6 +1223,27 @@ class DiscordCommands {
     } catch (error) {
       logger.error('Error handling /recap command', { error: error.message });
       await interaction.editReply('Error generating recap.');
+    }
+  }
+
+  // Handle /welcome command (send channel welcome messages)
+  async handleWelcome(interaction) {
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+      // Import bot to send welcome messages
+      const discordBot = require('./bot');
+
+      // Reset the flag so welcomes can be sent again
+      discordBot.welcomesSent = false;
+
+      // Send welcome messages to all channels
+      await discordBot.sendChannelWelcomes();
+
+      await interaction.editReply('Welcome messages have been sent to all channels! Each channel now has a pinned message explaining its purpose.');
+    } catch (error) {
+      logger.error('Error handling /welcome command', { error: error.message });
+      await interaction.editReply('Error sending welcome messages. Make sure all channel IDs are configured correctly.');
     }
   }
 }

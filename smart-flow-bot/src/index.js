@@ -261,18 +261,18 @@ class SmartStockScanner {
     const closedTrades = await paperTrading.closeAllAtMarketClose(prices);
     logger.info(`Closed ${closedTrades.length} paper trades at market close`);
 
-    // Notify about each closed trade
+    // Notify about each closed trade in paper-trades channel
     for (const trade of closedTrades) {
       const pnlSign = trade.pnlDollars >= 0 ? '+' : '';
       const emoji = trade.pnlDollars >= 0 ? '✅' : '❌';
       const message = `${emoji} **MARKET CLOSE** - ${trade.ticker}\n` +
                      `${pnlSign}$${trade.pnlDollars.toFixed(0)} (${pnlSign}${trade.optionPnlPercent.toFixed(0)}%)`;
-      await discordBot.sendMessage('flowAlerts', message);
+      await discordBot.sendMessage('paperTrades', message);
     }
 
-    // Send paper trading daily recap
+    // Send paper trading daily recap to daily-recap channel
     const paperRecap = paperTrading.formatRecapForDiscord();
-    await discordBot.sendMessage('flowAlerts', paperRecap);
+    await discordBot.sendMessage('dailyRecap', paperRecap);
 
     // Send daily summary
     const stats = database.getTodayStats();
@@ -660,6 +660,21 @@ class SmartStockScanner {
         if (tradeId) {
           heatResult.paperTradeId = tradeId;
           logger.info(`Opened paper trade #${tradeId} for ${ticker}`);
+
+          // Send paper trade open notification to paper-trades channel
+          const dirEmoji = recommendation.direction === 'BULLISH' ? '🟢' : '🔴';
+          const confEmoji = recommendation.confidenceScore >= 90 ? '🔥🔥🔥' :
+                           recommendation.confidenceScore >= 80 ? '🔥' : '📊';
+          const openMsg = `${confEmoji} **PAPER TRADE OPENED** - ${ticker} ${dirEmoji}\n` +
+                         `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                         `**Direction:** ${recommendation.direction}\n` +
+                         `**Entry:** $${recommendation.targets.entry.toFixed(2)}\n` +
+                         `**Target:** $${recommendation.targets.target.toFixed(2)}\n` +
+                         `**Stop:** $${recommendation.targets.stopLoss.toFixed(2)}\n` +
+                         `**Confidence:** ${recommendation.confidenceScore}/100\n` +
+                         (recommendation.optionSuggestion ? `**Option:** ${recommendation.optionSuggestion.description}\n` : '') +
+                         `**Trade ID:** #${tradeId}`;
+          await discordBot.sendMessage('paperTrades', openMsg);
         }
       }
     }
@@ -698,7 +713,7 @@ class SmartStockScanner {
     // Check for closed trades, proximity alerts, and trailing stop updates
     const results = await paperTrading.checkActiveTrades(prices);
 
-    // Notify about closed trades with full details
+    // Notify about closed trades with full details - send to paper-trades channel
     for (const trade of results.closedTrades) {
       const emoji = trade.pnlDollars > 0 ? '✅' : '❌';
       const resultText = trade.exitReason === 'TARGET_HIT' ? '🎯 TARGET HIT!' :
@@ -716,19 +731,19 @@ class SmartStockScanner {
                      `**Duration:** ${trade.duration}\n` +
                      `**Confidence:** ${trade.confidence}/100`;
 
-      await discordBot.sendMessage('flowAlerts', message);
+      await discordBot.sendMessage('paperTrades', message);
       logger.info(`Paper trade closed: ${trade.ticker} ${trade.exitReason} | Option: ${trade.optionPnlPercent.toFixed(0)}% | P&L: $${trade.pnlDollars.toFixed(0)}`);
     }
 
-    // Send proximity alerts (take profits, approaching target/stop)
+    // Send proximity alerts to paper-trades channel
     for (const alert of results.proximityAlerts) {
-      await discordBot.sendMessage('flowAlerts', alert.message);
+      await discordBot.sendMessage('paperTrades', alert.message);
       logger.info(`Proximity alert: ${alert.trade.ticker} ${alert.type}`);
     }
 
-    // Notify about trailing stop updates (locking in profits)
+    // Notify about trailing stop updates in paper-trades channel
     for (const update of results.trailingStopUpdates) {
-      await discordBot.sendMessage('flowAlerts', update.message);
+      await discordBot.sendMessage('paperTrades', update.message);
       logger.info(`Trailing stop update: ${update.trade.ticker} new stop $${update.newStop.toFixed(2)}`);
     }
   }
