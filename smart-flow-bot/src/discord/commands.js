@@ -281,7 +281,7 @@ class DiscordCommands {
   async handleAsk(interaction) {
     if (!claudeChat.isEnabled()) {
       await interaction.reply({
-        content: 'Claude AI is not configured. Add `ANTHROPIC_API_KEY` to enable.\n\nGet a free API key at: https://console.anthropic.com',
+        content: 'Claude CLI not found. To enable:\n```\nnpm install -g @anthropic-ai/claude-code\nclaude /login\n```\nThen restart the bot.',
         ephemeral: true
       });
       return;

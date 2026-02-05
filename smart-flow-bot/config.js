@@ -6,11 +6,8 @@ module.exports = {
     restUrl: 'https://api.polygon.io'
   },
 
-  // Anthropic (Claude AI) - Get free API key at https://console.anthropic.com
-  anthropic: {
-    apiKey: process.env.ANTHROPIC_API_KEY || '',
-    model: 'claude-sonnet-4-20250514'  // Fast and smart model
-  },
+  // Claude Chat uses Claude Code CLI (your Max subscription) - no API key needed
+  // Just run: npm install -g @anthropic-ai/claude-code && claude /login
 
   discord: {
     token: process.env.DISCORD_BOT_TOKEN || '',

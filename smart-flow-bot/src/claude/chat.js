@@ -1,126 +1,120 @@
-const Anthropic = require('@anthropic-ai/sdk');
-const config = require('../../config');
+const { spawn } = require('child_process');
 const logger = require('../utils/logger');
 
 class ClaudeChat {
   constructor() {
-    this.client = null;
-    this.conversationHistory = new Map(); // userId -> messages[]
-    this.maxHistoryLength = 20; // Keep last 20 messages per user
+    this.enabled = false;
+    this.claudePath = null;
   }
 
-  initialize() {
-    if (!config.anthropic?.apiKey) {
-      logger.warn('Anthropic API key not configured - Claude chat disabled');
-      return false;
+  async initialize() {
+    // Check if claude CLI is available
+    try {
+      const result = await this.runCommand('which', ['claude']);
+      if (result.success && result.output.trim()) {
+        this.claudePath = result.output.trim();
+        this.enabled = true;
+        logger.info('Claude Code CLI found - chat enabled (using Max subscription)');
+        return true;
+      }
+    } catch (error) {
+      // Try common paths
+      const paths = ['/usr/local/bin/claude', '/opt/homebrew/bin/claude', 'claude'];
+      for (const path of paths) {
+        try {
+          const test = await this.runCommand(path, ['--version']);
+          if (test.success) {
+            this.claudePath = path;
+            this.enabled = true;
+            logger.info(`Claude Code CLI found at ${path} - chat enabled`);
+            return true;
+          }
+        } catch (e) {
+          // Continue trying
+        }
+      }
     }
 
-    try {
-      this.client = new Anthropic({
-        apiKey: config.anthropic.apiKey
-      });
-      logger.info('Claude chat service initialized');
-      return true;
-    } catch (error) {
-      logger.error('Failed to initialize Claude chat', { error: error.message });
-      return false;
-    }
+    logger.warn('Claude Code CLI not found - chat disabled. Run: npm install -g @anthropic-ai/claude-code && claude /login');
+    return false;
   }
 
   isEnabled() {
-    return this.client !== null;
+    return this.enabled;
   }
 
-  // Get or create conversation history for a user
-  getHistory(userId) {
-    if (!this.conversationHistory.has(userId)) {
-      this.conversationHistory.set(userId, []);
-    }
-    return this.conversationHistory.get(userId);
+  // Run a shell command and return output
+  runCommand(command, args) {
+    return new Promise((resolve) => {
+      const proc = spawn(command, args, {
+        env: { ...process.env },
+        shell: true
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        resolve({
+          success: code === 0,
+          output: stdout,
+          error: stderr,
+          code
+        });
+      });
+
+      proc.on('error', (err) => {
+        resolve({
+          success: false,
+          output: '',
+          error: err.message,
+          code: -1
+        });
+      });
+    });
   }
 
-  // Add message to history
-  addToHistory(userId, role, content) {
-    const history = this.getHistory(userId);
-    history.push({ role, content });
-
-    // Trim history if too long
-    if (history.length > this.maxHistoryLength) {
-      history.splice(0, history.length - this.maxHistoryLength);
-    }
-  }
-
-  // Clear conversation history for a user
-  clearHistory(userId) {
-    this.conversationHistory.delete(userId);
-    return true;
-  }
-
-  // Send a message to Claude and get response
+  // Send a message to Claude via CLI
   async chat(userId, message, context = {}) {
-    if (!this.client) {
+    if (!this.enabled) {
       return {
         success: false,
-        error: 'Claude chat not configured. Add ANTHROPIC_API_KEY to enable.'
+        error: 'Claude CLI not available. Install with: npm install -g @anthropic-ai/claude-code && claude /login'
       };
     }
 
     try {
-      // Add user message to history
-      this.addToHistory(userId, 'user', message);
+      // Build the prompt with trading context
+      let prompt = this.buildPrompt(message, context);
 
-      // Build system prompt with trading context
-      const systemPrompt = this.buildSystemPrompt(context);
+      // Use claude CLI with --print flag for non-interactive output
+      // Escape the prompt for shell
+      const escapedPrompt = prompt.replace(/'/g, "'\\''");
 
-      // Get conversation history
-      const history = this.getHistory(userId);
+      const result = await this.runClaudeCommand(escapedPrompt);
 
-      // Call Claude API
-      const response = await this.client.messages.create({
-        model: config.anthropic?.model || 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
-        system: systemPrompt,
-        messages: history
-      });
-
-      // Extract response text
-      const responseText = response.content[0]?.text || 'No response generated.';
-
-      // Add assistant response to history
-      this.addToHistory(userId, 'assistant', responseText);
-
-      return {
-        success: true,
-        response: responseText,
-        usage: {
-          inputTokens: response.usage?.input_tokens,
-          outputTokens: response.usage?.output_tokens
-        }
-      };
-
+      if (result.success) {
+        return {
+          success: true,
+          response: result.output.trim() || 'No response generated.'
+        };
+      } else {
+        logger.error('Claude CLI error', { error: result.error });
+        return {
+          success: false,
+          error: result.error || 'Claude CLI returned an error'
+        };
+      }
     } catch (error) {
       logger.error('Claude chat error', { error: error.message, userId });
-
-      // Handle specific errors
-      if (error.status === 401) {
-        return {
-          success: false,
-          error: 'Invalid API key. Check your ANTHROPIC_API_KEY.'
-        };
-      }
-      if (error.status === 429) {
-        return {
-          success: false,
-          error: 'Rate limited. Try again in a moment.'
-        };
-      }
-      if (error.status === 529) {
-        return {
-          success: false,
-          error: 'Claude is overloaded. Try again shortly.'
-        };
-      }
-
       return {
         success: false,
         error: `Chat error: ${error.message}`
@@ -128,22 +122,77 @@ class ClaudeChat {
     }
   }
 
-  // Build system prompt with trading context
-  buildSystemPrompt(context = {}) {
-    let prompt = `You are a helpful trading assistant in a Discord server focused on stock trading and day trading.
+  // Run claude command with timeout
+  runClaudeCommand(prompt) {
+    return new Promise((resolve) => {
+      const timeout = 60000; // 60 second timeout
 
-Your role:
-- Help traders understand market signals, volume patterns, and price action
-- Explain trading concepts clearly and concisely
-- Provide educational information about trading strategies
-- Answer questions about stocks and market mechanics
+      // Use claude with -p (print) flag for single response
+      const proc = spawn(this.claudePath || 'claude', ['-p', prompt], {
+        env: { ...process.env },
+        shell: true,
+        timeout
+      });
 
-Important guidelines:
-- Keep responses concise (Discord has a 2000 character limit)
+      let stdout = '';
+      let stderr = '';
+      let resolved = false;
+
+      const timeoutId = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          proc.kill();
+          resolve({
+            success: false,
+            output: '',
+            error: 'Request timed out after 60 seconds'
+          });
+        }
+      }, timeout);
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeoutId);
+          resolve({
+            success: code === 0,
+            output: stdout,
+            error: stderr
+          });
+        }
+      });
+
+      proc.on('error', (err) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeoutId);
+          resolve({
+            success: false,
+            output: '',
+            error: err.message
+          });
+        }
+      });
+    });
+  }
+
+  // Build prompt with trading context
+  buildPrompt(message, context = {}) {
+    let prompt = `You are a trading assistant in a Discord server. Keep responses concise (under 1800 characters for Discord).
+
+Guidelines:
+- Help with trading concepts, market mechanics, and signal interpretation
 - Never give specific buy/sell advice or price targets
 - Always remind users that trading involves risk
-- Focus on education and analysis, not predictions
-- Use trading terminology appropriately`;
+- Be educational and clear`;
 
     // Add market context if available
     if (context.marketStatus) {
@@ -151,43 +200,26 @@ Important guidelines:
     }
 
     if (context.recentAlerts && context.recentAlerts.length > 0) {
-      prompt += `\n\nRecent scanner alerts (for context):`;
-      context.recentAlerts.slice(0, 5).forEach(alert => {
+      prompt += `\n\nRecent scanner alerts:`;
+      context.recentAlerts.slice(0, 3).forEach(alert => {
         prompt += `\n- ${alert.ticker}: ${alert.signal_type} (Heat: ${alert.heat_score})`;
       });
     }
 
+    prompt += `\n\nUser question: ${message}`;
+
     return prompt;
   }
 
-  // Quick one-off question without history
+  // Quick question (same as chat for CLI version)
   async quickQuestion(question, context = {}) {
-    if (!this.client) {
-      return {
-        success: false,
-        error: 'Claude chat not configured.'
-      };
-    }
+    return this.chat('quick', question, context);
+  }
 
-    try {
-      const response = await this.client.messages.create({
-        model: config.anthropic?.model || 'claude-sonnet-4-20250514',
-        max_tokens: 512,
-        system: this.buildSystemPrompt(context),
-        messages: [{ role: 'user', content: question }]
-      });
-
-      return {
-        success: true,
-        response: response.content[0]?.text || 'No response.'
-      };
-    } catch (error) {
-      logger.error('Claude quick question error', { error: error.message });
-      return {
-        success: false,
-        error: error.message
-      };
-    }
+  // Clear history (no-op for CLI version - each request is independent)
+  clearHistory(userId) {
+    // CLI version doesn't maintain history
+    return true;
   }
 }
 
