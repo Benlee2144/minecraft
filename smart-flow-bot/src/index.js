@@ -1078,50 +1078,54 @@ class SmartStockScanner {
     // Log the signal
     logger.flow(ticker, heatResult.heatScore, heatResult.breakdown);
 
-    // Generate trade recommendation
-    const recommendation = tradeRecommendation.generateRecommendation({
-      ticker,
-      price: signal.price,
-      heatScore: heatResult.heatScore,
-      signalType: signal.type,
-      volumeMultiplier: signal.rvol || context.volumeMultiple || 1,
-      priceChange: signal.priceChange || signal.todayChangePercent || 0,
-      signalBreakdown: heatResult.breakdown
-    });
+    // Generate trade recommendation (wrapped in try-catch so alerts still send if this fails)
+    try {
+      const recommendation = tradeRecommendation.generateRecommendation({
+        ticker,
+        price: signal.price,
+        heatScore: heatResult.heatScore,
+        signalType: signal.type,
+        volumeMultiplier: signal.rvol || context.volumeMultiple || 1,
+        priceChange: signal.priceChange || signal.todayChangePercent || 0,
+        signalBreakdown: heatResult.breakdown
+      });
 
-    // Add recommendation to heat result for display
-    heatResult.recommendation = recommendation;
+      // Add recommendation to heat result for display
+      heatResult.recommendation = recommendation;
 
-    // Open paper trade if recommendation is actionable
-    if (recommendation.confidenceScore >= 70 &&
-        recommendation.recommendation.action !== 'WATCH' &&
-        recommendation.recommendation.action !== 'AVOID') {
-      // Check if we should open this trade
-      if (paperTrading.shouldOpenTrade(ticker, recommendation.direction)) {
-        const tradeId = paperTrading.openTrade(recommendation);
-        if (tradeId) {
-          heatResult.paperTradeId = tradeId;
-          logger.info(`Opened paper trade #${tradeId} for ${ticker}`);
+      // Open paper trade if recommendation is actionable
+      if (recommendation && recommendation.confidenceScore >= 70 &&
+          recommendation.recommendation.action !== 'WATCH' &&
+          recommendation.recommendation.action !== 'AVOID') {
+        // Check if we should open this trade
+        if (paperTrading.shouldOpenTrade(ticker, recommendation.direction)) {
+          const tradeId = paperTrading.openTrade(recommendation);
+          if (tradeId) {
+            heatResult.paperTradeId = tradeId;
+            logger.info(`Opened paper trade #${tradeId} for ${ticker}`);
 
-          // Send paper trade open notification to paper-trades channel
-          const dirEmoji = recommendation.direction === 'BULLISH' ? '🟢' : '🔴';
-          const confEmoji = recommendation.confidenceScore >= 90 ? '🔥🔥🔥' :
-                           recommendation.confidenceScore >= 80 ? '🔥' : '📊';
-          const openMsg = `${confEmoji} **PAPER TRADE OPENED** - ${ticker} ${dirEmoji}\n` +
-                         `━━━━━━━━━━━━━━━━━━━━━━\n` +
-                         `**Direction:** ${recommendation.direction}\n` +
-                         `**Entry:** $${recommendation.targets.entry.toFixed(2)}\n` +
-                         `**Target:** $${recommendation.targets.target.toFixed(2)}\n` +
-                         `**Stop:** $${recommendation.targets.stopLoss.toFixed(2)}\n` +
-                         `**Confidence:** ${recommendation.confidenceScore}/100\n` +
-                         (recommendation.optionSuggestion ? `**Option:** ${recommendation.optionSuggestion.description}\n` : '') +
-                         `**Trade ID:** #${tradeId}`;
-          await discordBot.sendMessage('paperTrades', openMsg);
+            // Send paper trade open notification to paper-trades channel
+            const dirEmoji = recommendation.direction === 'BULLISH' ? '🟢' : '🔴';
+            const confEmoji = recommendation.confidenceScore >= 90 ? '🔥🔥🔥' :
+                             recommendation.confidenceScore >= 80 ? '🔥' : '📊';
+            const openMsg = `${confEmoji} **PAPER TRADE OPENED** - ${ticker} ${dirEmoji}\n` +
+                           `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                           `**Direction:** ${recommendation.direction}\n` +
+                           `**Entry:** $${recommendation.targets.entry.toFixed(2)}\n` +
+                           `**Target:** $${recommendation.targets.target.toFixed(2)}\n` +
+                           `**Stop:** $${recommendation.targets.stopLoss.toFixed(2)}\n` +
+                           `**Confidence:** ${recommendation.confidenceScore}/100\n` +
+                           (recommendation.optionSuggestion ? `**Option:** ${recommendation.optionSuggestion.description}\n` : '') +
+                           `**Trade ID:** #${tradeId}`;
+            await discordBot.sendMessage('paperTrades', openMsg);
+          }
         }
       }
+    } catch (recError) {
+      logger.warn(`Recommendation generation failed for ${ticker}`, { error: recError.message });
     }
 
-    // Send alert to Discord
+    // Send alert to Discord (always try even if recommendation failed)
     await discordBot.sendStockAlert(signal, heatResult);
 
     // Save to database
