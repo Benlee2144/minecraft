@@ -99,22 +99,22 @@ module.exports = {
     // Add tickers to ignore here
   ],
 
-  // Top tickers to monitor (most liquid)
+  // Top day trading tickers ONLY - mega caps with best options liquidity
   topTickers: [
-    'SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'AMD', 'TSLA', 'AMZN', 'GOOGL', 'META',
-    'NFLX', 'CRM', 'ORCL', 'ADBE', 'INTC', 'MU', 'QCOM', 'AVGO', 'TXN', 'AMAT',
-    'LRCX', 'KLAC', 'MRVL', 'ON', 'SMCI', 'ARM', 'MARA', 'RIOT', 'COIN', 'SQ',
-    'PYPL', 'V', 'MA', 'JPM', 'GS', 'MS', 'BAC', 'WFC', 'C', 'SCHW',
-    'BRK.B', 'UNH', 'JNJ', 'PFE', 'MRK', 'ABBV', 'LLY', 'BMY', 'GILD', 'AMGN',
-    'XOM', 'CVX', 'OXY', 'COP', 'SLB', 'HAL', 'DVN', 'EOG', 'MPC', 'VLO',
-    'BA', 'LMT', 'RTX', 'NOC', 'GD', 'CAT', 'DE', 'HON', 'GE', 'MMM',
-    'HD', 'LOW', 'TGT', 'WMT', 'COST', 'DG', 'DLTR', 'ROSS', 'TJX', 'NKE',
-    'DIS', 'CMCSA', 'T', 'VZ', 'TMUS', 'CHTR', 'PARA', 'WBD', 'NFLX', 'ROKU',
-    'F', 'GM', 'RIVN', 'LCID', 'NIO', 'XPEV', 'LI', 'FSR', 'UBER', 'LYFT',
-    'ABNB', 'BKNG', 'EXPE', 'MAR', 'HLT', 'RCL', 'CCL', 'NCLH', 'DAL', 'UAL',
-    'AAL', 'LUV', 'SAVE', 'JBLU', 'ALK', 'XLF', 'XLE', 'XLK', 'XLV', 'XLI',
-    'XLP', 'XLY', 'XLB', 'XLU', 'XLRE', 'GLD', 'SLV', 'USO', 'UNG', 'TLT',
-    'IWM', 'DIA', 'VXX', 'UVXY', 'SQQQ', 'TQQQ', 'SPXU', 'SPXL', 'SOXL', 'SOXS'
+    // ETFs - most liquid
+    'SPY', 'QQQ', 'IWM',
+
+    // Mega cap tech - the main ones everyone trades
+    'AAPL', 'MSFT', 'NVDA', 'AMD', 'TSLA', 'AMZN', 'GOOGL', 'META', 'NFLX',
+
+    // Popular momentum stocks
+    'COIN', 'PLTR', 'SOFI', 'RIVN', 'NIO', 'MARA', 'RIOT',
+
+    // Financials
+    'JPM', 'BAC', 'GS',
+
+    // Other popular day trades
+    'BA', 'DIS', 'UBER', 'XOM'
   ],
 
   // Database
