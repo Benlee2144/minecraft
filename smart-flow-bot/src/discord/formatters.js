@@ -837,26 +837,49 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
   formatRecommendationField(rec) {
     const lines = [];
 
-    // Action line
-    lines.push(`**${rec.recommendation.action}** (${rec.confidenceScore}/100 confidence)`);
-
-    // Option suggestion
-    if (rec.optionSuggestion) {
-      lines.push(`Option: **${rec.optionSuggestion.strike} ${rec.optionSuggestion.type}** exp ${rec.optionSuggestion.expiration}`);
+    // Fire alert header for high confidence
+    if (rec.confidenceScore >= 90) {
+      lines.push('🔥🔥🔥 **FIRE ALERT - ENTER NOW** 🔥🔥🔥');
+    } else if (rec.confidenceScore >= 80) {
+      lines.push('🔥 **STRONG ENTRY SIGNAL** 🔥');
     }
 
-    // Targets
-    lines.push(`Entry: $${rec.targets.entry.toFixed(2)} → Target: $${rec.targets.target.toFixed(2)} | Stop: $${rec.targets.stopLoss.toFixed(2)}`);
-    lines.push(`Risk/Reward: **${rec.targets.riskReward}:1**`);
+    // Action and confidence
+    lines.push(`**${rec.recommendation.shortAction || rec.recommendation.action}** | Confidence: **${rec.confidenceScore}/100**`);
+
+    // Option suggestion with contracts
+    if (rec.optionSuggestion) {
+      lines.push(`📋 **Trade:** ${rec.optionSuggestion.fullDescription || rec.optionSuggestion.description}`);
+    }
+
+    // Targets with partial
+    lines.push(`🎯 Entry: $${rec.targets.entry.toFixed(2)}`);
+    if (rec.targets.partialTarget) {
+      lines.push(`   Partial (50%): $${rec.targets.partialTarget.toFixed(2)} | Full: $${rec.targets.target.toFixed(2)}`);
+    } else {
+      lines.push(`   Target: $${rec.targets.target.toFixed(2)}`);
+    }
+    lines.push(`   Stop: $${rec.targets.stopLoss.toFixed(2)} | R:R **${rec.targets.riskReward}:1**`);
+
+    // Expected P&L if available
+    if (rec.optionPnL) {
+      lines.push(`💰 **If target hit:** +$${rec.optionPnL.maxProfitDollars} (${rec.optionPnL.expectedOptionGain})`);
+      lines.push(`   **If stopped:** -$${rec.optionPnL.maxLossDollars} (${rec.optionPnL.expectedOptionLoss})`);
+    }
 
     // Supporting factors (short form)
-    if (rec.factors.length > 0) {
-      lines.push(`✓ ${rec.factors.slice(0, 3).join(' | ')}`);
+    if (rec.factors && rec.factors.length > 0) {
+      lines.push(`✅ ${rec.factors.slice(0, 3).join(' | ')}`);
     }
 
     // Warnings (short form)
-    if (rec.warnings.length > 0) {
+    if (rec.warnings && rec.warnings.length > 0) {
       lines.push(`⚠️ ${rec.warnings.slice(0, 2).join(' | ')}`);
+    }
+
+    // Urgency timing
+    if (rec.urgency) {
+      lines.push(`⏰ **${rec.urgency}**`);
     }
 
     // Bot's opinion

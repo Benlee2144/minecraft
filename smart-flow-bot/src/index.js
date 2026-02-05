@@ -249,8 +249,26 @@ class SmartStockScanner {
 
     // Close all open paper trades at market close
     logger.info('Closing all open paper trades at market close...');
-    const closedTrades = await paperTrading.closeAllAtMarketClose();
+
+    // Build price map for closing
+    const prices = {};
+    for (const [ticker, snapshot] of this.lastSnapshots) {
+      if (snapshot.price) {
+        prices[ticker] = snapshot.price;
+      }
+    }
+
+    const closedTrades = await paperTrading.closeAllAtMarketClose(prices);
     logger.info(`Closed ${closedTrades.length} paper trades at market close`);
+
+    // Notify about each closed trade
+    for (const trade of closedTrades) {
+      const pnlSign = trade.pnlDollars >= 0 ? '+' : '';
+      const emoji = trade.pnlDollars >= 0 ? '✅' : '❌';
+      const message = `${emoji} **MARKET CLOSE** - ${trade.ticker}\n` +
+                     `${pnlSign}$${trade.pnlDollars.toFixed(0)} (${pnlSign}${trade.optionPnlPercent.toFixed(0)}%)`;
+      await discordBot.sendMessage('flowAlerts', message);
+    }
 
     // Send paper trading daily recap
     const paperRecap = paperTrading.formatRecapForDiscord();
@@ -677,21 +695,41 @@ class SmartStockScanner {
       }
     }
 
-    // Check for closed trades
-    const closedTrades = await paperTrading.checkActiveTrades(prices);
+    // Check for closed trades, proximity alerts, and trailing stop updates
+    const results = await paperTrading.checkActiveTrades(prices);
 
-    // Notify about closed trades
-    for (const trade of closedTrades) {
-      const emoji = trade.pnlPercent > 0 ? '✅' : '❌';
-      const result = trade.exitReason === 'TARGET_HIT' ? 'Target Hit!' :
-                     trade.exitReason === 'STOP_LOSS' ? 'Stopped Out' : 'Market Close';
+    // Notify about closed trades with full details
+    for (const trade of results.closedTrades) {
+      const emoji = trade.pnlDollars > 0 ? '✅' : '❌';
+      const resultText = trade.exitReason === 'TARGET_HIT' ? '🎯 TARGET HIT!' :
+                         trade.exitReason === 'STOP_LOSS' ? '🛑 STOPPED OUT' :
+                         trade.exitReason === 'TRAILING_STOP' ? '📈 TRAILING STOP' : '⏰ MARKET CLOSE';
 
-      const message = `${emoji} **Paper Trade Closed** - ${trade.ticker}\n` +
-                     `Result: ${result}\n` +
-                     `P&L: ${trade.pnlPercent > 0 ? '+' : ''}${trade.pnlPercent.toFixed(2)}% ($${trade.pnlDollars.toFixed(2)})`;
+      const pnlSign = trade.pnlDollars >= 0 ? '+' : '';
+      const message = `${emoji} **PAPER TRADE CLOSED** - ${trade.ticker}\n` +
+                     `━━━━━━━━━━━━━━━━━━━━━━\n` +
+                     `**Result:** ${resultText}\n` +
+                     `**Entry:** $${trade.entry_price.toFixed(2)} → **Exit:** $${trade.exit_price.toFixed(2)}\n` +
+                     `**Stock Move:** ${trade.stockPnlPercent > 0 ? '+' : ''}${trade.stockPnlPercent.toFixed(2)}%\n` +
+                     `**Option P&L:** ${pnlSign}${trade.optionPnlPercent.toFixed(0)}%\n` +
+                     `**💰 Dollar P&L:** ${pnlSign}$${trade.pnlDollars.toFixed(0)}\n` +
+                     `**Duration:** ${trade.duration}\n` +
+                     `**Confidence:** ${trade.confidence}/100`;
 
       await discordBot.sendMessage('flowAlerts', message);
-      logger.info(`Paper trade closed: ${trade.ticker} ${trade.exitReason} ${trade.pnlPercent.toFixed(2)}%`);
+      logger.info(`Paper trade closed: ${trade.ticker} ${trade.exitReason} | Option: ${trade.optionPnlPercent.toFixed(0)}% | P&L: $${trade.pnlDollars.toFixed(0)}`);
+    }
+
+    // Send proximity alerts (take profits, approaching target/stop)
+    for (const alert of results.proximityAlerts) {
+      await discordBot.sendMessage('flowAlerts', alert.message);
+      logger.info(`Proximity alert: ${alert.trade.ticker} ${alert.type}`);
+    }
+
+    // Notify about trailing stop updates (locking in profits)
+    for (const update of results.trailingStopUpdates) {
+      await discordBot.sendMessage('flowAlerts', update.message);
+      logger.info(`Trailing stop update: ${update.trade.ticker} new stop $${update.newStop.toFixed(2)}`);
     }
   }
 
