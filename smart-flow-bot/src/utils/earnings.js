@@ -56,53 +56,67 @@ class EarningsCalendar {
   }
 
   // Fetch earnings date for a single ticker
-  // Tries Yahoo Finance with multiple endpoints and fallbacks
+  // Tries multiple free sources with fallbacks
   async fetchEarningsForTicker(ticker) {
     ticker = ticker.toUpperCase();
 
-    // Try Yahoo Finance endpoints (they change frequently)
-    const yahooEndpoints = [
-      `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=calendarEvents`,
-      `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${ticker}?modules=calendarEvents`
-    ];
+    // Try Yahoo Finance v7 options endpoint (more reliable)
+    try {
+      const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/options/${ticker}`;
+      const response = await axios.get(yahooUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5'
+        },
+        timeout: 10000
+      });
 
-    for (const url of yahooEndpoints) {
-      try {
-        const response = await axios.get(url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Accept-Language': 'en-US,en;q=0.9'
-          },
-          timeout: 8000
-        });
+      const quote = response.data?.optionChain?.result?.[0]?.quote;
+      if (quote?.earningsTimestamp) {
+        const earningsDate = new Date(quote.earningsTimestamp * 1000);
+        const dateStr = earningsDate.toISOString().split('T')[0];
 
-        const data = response.data;
-        const calendarEvents = data?.quoteSummary?.result?.[0]?.calendarEvents;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
 
-        if (calendarEvents?.earnings?.earningsDate) {
-          const earningsDateArray = calendarEvents.earnings.earningsDate;
-          if (earningsDateArray.length > 0) {
-            const epochSeconds = earningsDateArray[0].raw;
-            const earningsDate = new Date(epochSeconds * 1000);
-            const dateStr = earningsDate.toISOString().split('T')[0];
-
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-
-            if (earningsDate >= today) {
-              this.setEarningsDate(ticker, dateStr);
-              return { ticker, date: dateStr, source: 'yahoo' };
-            }
-          }
+        if (earningsDate >= today) {
+          this.setEarningsDate(ticker, dateStr);
+          return { ticker, date: dateStr, source: 'yahoo' };
         }
-      } catch (error) {
-        // Try next endpoint silently
-        continue;
       }
+    } catch (error) {
+      // Try backup source
     }
 
-    // Log only once after all attempts failed
+    // Try Yahoo quote endpoint as backup
+    try {
+      const quoteUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`;
+      const response = await axios.get(quoteUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+          'Accept': '*/*'
+        },
+        timeout: 10000
+      });
+
+      const quote = response.data?.quoteResponse?.result?.[0];
+      if (quote?.earningsTimestamp) {
+        const earningsDate = new Date(quote.earningsTimestamp * 1000);
+        const dateStr = earningsDate.toISOString().split('T')[0];
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        if (earningsDate >= today) {
+          this.setEarningsDate(ticker, dateStr);
+          return { ticker, date: dateStr, source: 'yahoo-quote' };
+        }
+      }
+    } catch (error) {
+      // Both sources failed
+    }
+
     logger.debug(`Could not fetch earnings for ${ticker}`);
     return null;
   }
