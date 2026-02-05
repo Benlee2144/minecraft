@@ -673,12 +673,14 @@ class SmartStockScanner {
         this.alertCooldowns.set(cooldownKey, Date.now());
 
         // Get recommendation
-        const recommendation = await tradeRecommendation.generateRecommendation(ticker, signal, {
+        const recommendation = tradeRecommendation.generateRecommendation({
+          ticker,
           price,
-          rvol,
-          changePercent,
-          volume: currentVolume,
-          avgVolume
+          heatScore: heatResult.score,
+          signalType: signalType,
+          volumeMultiplier: rvol,
+          priceChange: changePercent,
+          signalBreakdown: heatResult.breakdown
         });
 
         // Send alert
