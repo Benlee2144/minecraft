@@ -5,6 +5,7 @@ const database = require('../database/sqlite');
 const formatters = require('./formatters');
 const heatScore = require('../detection/heatScore');
 const claudeChat = require('../claude/chat');
+const polygonRest = require('../polygon/rest');
 
 class DiscordCommands {
   constructor() {
@@ -376,7 +377,13 @@ class DiscordCommands {
     try {
       // Get recent signals for this ticker
       const flowSummary = database.getFlowSummary(ticker);
-      const currentPrice = flowSummary.price;
+
+      // Fetch real-time price from Polygon
+      let currentPrice = flowSummary.price;
+      if (!currentPrice) {
+        const snapshot = await polygonRest.getStockSnapshot(ticker);
+        currentPrice = snapshot?.price || snapshot?.lastTradePrice;
+      }
 
       // Generate trade idea
       const idea = await claudeChat.generateTradeIdea(
@@ -391,11 +398,18 @@ class DiscordCommands {
           .setTitle(`💡 Trade Idea: ${ticker}`)
           .setColor(0x9B59B6)
           .setDescription(idea)
-          .addFields({
-            name: '📊 Chart',
-            value: `[View on TradingView](https://www.tradingview.com/chart/?symbol=${ticker})`,
-            inline: true
-          })
+          .addFields(
+            {
+              name: '💵 Current Price',
+              value: currentPrice ? `$${currentPrice.toFixed(2)}` : 'N/A',
+              inline: true
+            },
+            {
+              name: '📊 Chart',
+              value: `[View on TradingView](https://www.tradingview.com/chart/?symbol=${ticker})`,
+              inline: true
+            }
+          )
           .setFooter({ text: 'AI-generated thesis - not financial advice' })
           .setTimestamp();
 
