@@ -1097,10 +1097,16 @@ class SmartStockScanner {
 
       // Open paper trade if recommendation is actionable (lowered threshold for day trading)
       // Day traders need action - if heat score hit 60+ threshold, we should trade
+      logger.info(`Trade check: ${ticker} | Confidence: ${recommendation.confidenceScore} | Action: ${recommendation.recommendation.shortAction}`);
+
       if (recommendation && recommendation.confidenceScore >= 60 &&
-          recommendation.recommendation.action !== 'AVOID') {
+          !recommendation.recommendation.shortAction.includes('AVOID') &&
+          !recommendation.recommendation.shortAction.includes('WATCH')) {
         // Check if we should open this trade
-        if (paperTrading.shouldOpenTrade(ticker, recommendation.direction)) {
+        const canOpen = paperTrading.shouldOpenTrade(ticker, recommendation.direction);
+        logger.info(`Paper trade eligible: ${ticker} | Can open: ${canOpen}`);
+
+        if (canOpen) {
           const tradeId = paperTrading.openTrade(recommendation);
           if (tradeId) {
             heatResult.paperTradeId = tradeId;
