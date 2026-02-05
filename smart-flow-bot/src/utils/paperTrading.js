@@ -26,9 +26,9 @@ class PaperTrading {
     this.TARGET_PROXIMITY_THRESHOLD = 0.8; // Alert when 80% of the way to target
     this.STOP_PROXIMITY_THRESHOLD = 0.7; // Alert when 70% of the way to stop
 
-    // Max daily loss protection
-    this.MAX_DAILY_LOSS = 500; // Stop trading after losing $500 in a day
-    this.MAX_CONSECUTIVE_LOSSES = 3; // Stop after 3 consecutive losses
+    // Risk management (disabled for full tracking - set high limits)
+    this.MAX_DAILY_LOSS = 999999; // No daily loss limit - track everything
+    this.MAX_CONSECUTIVE_LOSSES = 999; // No consecutive loss limit - keep trading
     this.consecutiveLosses = 0;
     this.dailyLossLimitHit = false;
     this.dailyLossLimitMessage = null;
