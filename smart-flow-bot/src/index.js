@@ -5,6 +5,7 @@ const logger = require('./utils/logger');
 const marketHours = require('./utils/marketHours');
 const database = require('./database/sqlite');
 const polygonRest = require('./polygon/rest');
+const polygonWS = require('./polygon/websocket');
 
 // Stock Detection modules
 const stockHeatScore = require('./detection/stockHeatScore');
@@ -46,8 +47,14 @@ class SmartStockScanner {
     this.volumeBaselines = new Map();
     this.previousCloses = new Map();
     this.alertCooldowns = new Map(); // Throttle alerts per ticker
-    this.alertCooldownMs = 60000; // 60 second cooldown per ticker (polling is slower)
-    this.pollIntervalMs = 30000; // Poll every 30 seconds
+    this.alertCooldownMs = 30000; // 30 second cooldown (faster with WebSocket)
+    this.pollIntervalMs = 60000; // REST poll every 60 seconds (backup only)
+
+    // WebSocket mode
+    this.useWebSocket = true; // Enable real-time streaming
+    this.wsConnected = false;
+    this.realtimeVolumes = new Map(); // Track real-time volume accumulation
+    this.lastTradePrice = new Map(); // Track last trade price per ticker
     this.sectorUpdateIntervalMs = 120000; // Update sectors every 2 minutes
 
     // Elite feature intervals
@@ -120,6 +127,11 @@ class SmartStockScanner {
       // Start sector correlation monitoring
       this.startSectorCorrelationMonitoring();
 
+      // Connect to WebSocket for real-time streaming
+      if (this.useWebSocket) {
+        await this.startWebSocket();
+      }
+
       this.isRunning = true;
 
       // Send startup message
@@ -128,8 +140,11 @@ class SmartStockScanner {
 
       logger.info('='.repeat(50));
       logger.info('Smart Stock Scanner is now running!');
-      logger.info(`Monitoring ${config.topTickers.length} tickers via REST API`);
-      logger.info(`Polling interval: ${this.pollIntervalMs / 1000} seconds`);
+      logger.info(`Mode: ${this.wsConnected ? '⚡ REAL-TIME WebSocket' : '🔄 REST API Polling'}`);
+      logger.info(`Monitoring ${config.topTickers.length} tickers`);
+      if (!this.wsConnected) {
+        logger.info(`REST polling interval: ${this.pollIntervalMs / 1000} seconds`);
+      }
       logger.info(`Market status: ${marketHours.isMarketOpen() ? 'OPEN' : 'CLOSED'}`);
       logger.info('='.repeat(50));
 
@@ -435,6 +450,10 @@ class SmartStockScanner {
     // Reset paper trading for next day
     paperTrading.resetDailyTracking();
 
+    // Reset real-time volume tracking for next day
+    this.realtimeVolumes.clear();
+    this.lastTradePrice.clear();
+
     logger.info('Monitoring stopped for the day');
   }
 
@@ -442,13 +461,246 @@ class SmartStockScanner {
     // Initial poll
     this.pollMarketData();
 
-    // Set up interval for continuous polling
+    // Set up interval for continuous polling (backup for WebSocket)
     this.pollingInterval = setInterval(() => {
       if (this.isMonitoring && marketHours.isMarketOpen()) {
         this.pollMarketData();
       }
     }, this.pollIntervalMs);
   }
+
+  // ========== WEBSOCKET REAL-TIME STREAMING ==========
+  async startWebSocket() {
+    try {
+      logger.info('⚡ Connecting to Polygon WebSocket for real-time streaming...');
+
+      // Set up event handlers before connecting
+      this.setupWebSocketHandlers();
+
+      // Connect to WebSocket
+      await polygonWS.connect();
+      this.wsConnected = true;
+
+      // Wait for authentication
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('WebSocket auth timeout')), 10000);
+        polygonWS.once('authenticated', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        polygonWS.once('auth_failed', (msg) => {
+          clearTimeout(timeout);
+          reject(new Error(`Auth failed: ${msg}`));
+        });
+      });
+
+      // Subscribe to stock trades and aggregates for our watchlist
+      const tickersToStream = [...new Set([
+        ...config.topTickers.slice(0, 50), // Top 50 most liquid
+        ...discordBot.getAllWatchedTickers()
+      ])];
+
+      logger.info(`Subscribing to real-time data for ${tickersToStream.length} tickers...`);
+
+      // Subscribe to trades (T.*) and minute aggregates (AM.*)
+      polygonWS.subscribeToStockTrades(tickersToStream);
+      polygonWS.subscribeToStockAggregates(tickersToStream);
+
+      logger.info('⚡ WebSocket connected and streaming real-time data!');
+
+    } catch (error) {
+      logger.warn('WebSocket connection failed, falling back to REST polling', { error: error.message });
+      this.wsConnected = false;
+      this.useWebSocket = false;
+    }
+  }
+
+  setupWebSocketHandlers() {
+    // Handle real-time trades
+    polygonWS.on('trade', (trade) => {
+      if (!this.isMonitoring || !marketHours.isMarketOpen()) return;
+      this.processRealtimeTrade(trade);
+    });
+
+    // Handle minute aggregates
+    polygonWS.on('aggregate', (agg) => {
+      if (!this.isMonitoring || !marketHours.isMarketOpen()) return;
+      this.processRealtimeAggregate(agg);
+    });
+
+    // Handle disconnection
+    polygonWS.on('max_reconnect_reached', () => {
+      logger.error('WebSocket max reconnect attempts reached, switching to REST polling');
+      this.wsConnected = false;
+    });
+
+    polygonWS.on('error', (error) => {
+      logger.error('WebSocket error', { error: error.message });
+    });
+  }
+
+  processRealtimeTrade(trade) {
+    try {
+      const { ticker, price, size, timestamp } = trade;
+      if (!ticker || !price) return;
+
+      // Track last trade price
+      this.lastTradePrice.set(ticker, price);
+
+      // Accumulate volume
+      const currentVolume = this.realtimeVolumes.get(ticker) || 0;
+      this.realtimeVolumes.set(ticker, currentVolume + size);
+
+      // Check for block trades (>10k shares or >$200k)
+      const tradeValue = price * size;
+      if (size >= 10000 || tradeValue >= 200000) {
+        logger.info(`🔷 Block trade: ${ticker} ${size.toLocaleString()} shares @ $${price.toFixed(2)} ($${(tradeValue / 1000000).toFixed(2)}M)`);
+
+        blockTradeDetector.analyzeBlock(ticker, {
+          price,
+          size,
+          value: tradeValue,
+          conditions: trade.conditions || [],
+          previousClose: this.previousCloses.get(ticker)?.close
+        });
+
+        // Trigger immediate evaluation for block trades
+        this.evaluateRealtimeSignal(ticker, 'block_trade', {
+          size,
+          value: tradeValue,
+          price
+        });
+      }
+
+      // Update order flow in real-time
+      const prevPrice = this.lastSnapshots.get(ticker)?.price || price;
+      const direction = price > prevPrice ? 'buy' : price < prevPrice ? 'sell' : 'neutral';
+
+      orderFlowImbalance.updateFlowData(ticker, {
+        price,
+        volume: size,
+        change: ((price - prevPrice) / prevPrice) * 100
+      });
+
+    } catch (error) {
+      logger.debug('Error processing real-time trade', { error: error.message });
+    }
+  }
+
+  processRealtimeAggregate(agg) {
+    try {
+      const { ticker, open, high, low, close, volume, vwap } = agg;
+      if (!ticker || !close) return;
+
+      const avgVolume = this.volumeBaselines.get(ticker) || 1;
+      const totalVolume = this.realtimeVolumes.get(ticker) || volume;
+      const prevClose = this.previousCloses.get(ticker)?.close;
+
+      // Build snapshot from aggregate
+      const snapshot = {
+        ticker,
+        price: close,
+        open,
+        high,
+        low,
+        todayVolume: totalVolume,
+        prevDayVolume: avgVolume,
+        prevDayClose: prevClose,
+        todayChange: prevClose ? close - prevClose : 0,
+        todayChangePercent: prevClose ? ((close - prevClose) / prevClose) * 100 : 0,
+        vwap,
+        isRealtime: true
+      };
+
+      // Process through normal signal detection
+      this.processSnapshot(snapshot);
+
+    } catch (error) {
+      logger.debug('Error processing real-time aggregate', { error: error.message });
+    }
+  }
+
+  async evaluateRealtimeSignal(ticker, signalType, data) {
+    try {
+      // Check cooldown
+      const cooldownKey = `${ticker}-${signalType}`;
+      const lastAlert = this.alertCooldowns.get(cooldownKey);
+      if (lastAlert && Date.now() - lastAlert < this.alertCooldownMs) {
+        return; // Still in cooldown
+      }
+
+      const price = data.price || this.lastTradePrice.get(ticker);
+      const avgVolume = this.volumeBaselines.get(ticker) || 1;
+      const currentVolume = this.realtimeVolumes.get(ticker) || 0;
+      const prevClose = this.previousCloses.get(ticker)?.close;
+
+      // Calculate RVOL
+      const minutesSinceOpen = marketHours.getMinutesSinceOpen();
+      const expectedRvol = minutesSinceOpen / 390;
+      const rvol = avgVolume > 0 ? (currentVolume / avgVolume) / (expectedRvol || 0.1) : 1;
+
+      // Calculate change
+      const changePercent = prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+
+      // Build signal for heat score
+      const signal = {
+        type: signalType,
+        ticker,
+        price,
+        rvol,
+        currentVolume,
+        avgVolume,
+        severity: signalType === 'block_trade' ? 'high' : 'medium',
+        description: signalType === 'block_trade'
+          ? `Block: ${data.size.toLocaleString()} shares ($${(data.value / 1000).toFixed(0)}k)`
+          : `Real-time signal`
+      };
+
+      // Calculate heat score
+      const heatResult = stockHeatScore.calculateHeatScore(ticker, [signal], {
+        price,
+        rvol,
+        priceChange: changePercent,
+        volume: currentVolume,
+        isWatched: discordBot.getAllWatchedTickers().includes(ticker)
+      });
+
+      if (heatResult.score >= config.heatScore.alertThreshold) {
+        this.alertCooldowns.set(cooldownKey, Date.now());
+
+        // Get recommendation
+        const recommendation = await tradeRecommendation.generateRecommendation(ticker, signal, {
+          price,
+          rvol,
+          changePercent,
+          volume: currentVolume,
+          avgVolume
+        });
+
+        // Send alert
+        await this.sendSignalAlert(ticker, signal, heatResult, recommendation);
+      }
+
+    } catch (error) {
+      logger.error('Error evaluating real-time signal', { error: error.message, ticker });
+    }
+  }
+
+  // Resubscribe when watchlist changes
+  updateWebSocketSubscriptions() {
+    if (!this.wsConnected) return;
+
+    const tickersToStream = [...new Set([
+      ...config.topTickers.slice(0, 50),
+      ...discordBot.getAllWatchedTickers()
+    ])];
+
+    polygonWS.subscribeToStockTrades(tickersToStream);
+    polygonWS.subscribeToStockAggregates(tickersToStream);
+    logger.info(`Updated WebSocket subscriptions: ${tickersToStream.length} tickers`);
+  }
+
+  // ========== END WEBSOCKET ==========
 
   async pollMarketData() {
     try {
@@ -1018,14 +1270,15 @@ class SmartStockScanner {
     return {
       polygonConnected: true, // REST API is stateless
       polygonAuthenticated: true,
+      websocketConnected: this.wsConnected,
       tickersMonitored: config.topTickers.length,
       baselinesLoaded: this.volumeBaselines.size,
       keyLevelsLoaded: keyLevels.levels?.size || 0,
       marketOpen: marketHours.isMarketOpen(),
       isMonitoring: this.isMonitoring,
       uptime: process.uptime(),
-      dataSource: 'REST API (Polling)',
-      pollInterval: `${this.pollIntervalMs / 1000}s`,
+      dataSource: this.wsConnected ? '⚡ Real-Time WebSocket' : '🔄 REST API (Polling)',
+      pollInterval: this.wsConnected ? 'Real-time' : `${this.pollIntervalMs / 1000}s`,
       tradingPhase: phase.label,
       tradingPhaseEmoji: phase.emoji,
       heatBonus: phase.heatBonus || 0,
@@ -1090,6 +1343,13 @@ class SmartStockScanner {
 
     if (this.sectorCorrelationInterval) {
       clearInterval(this.sectorCorrelationInterval);
+    }
+
+    // Close WebSocket connection
+    if (this.wsConnected) {
+      logger.info('Closing WebSocket connection...');
+      polygonWS.close();
+      this.wsConnected = false;
     }
 
     // Clear elite module data
