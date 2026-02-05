@@ -494,7 +494,10 @@ class SmartStockScanner {
         });
       });
 
-      // Subscribe to stock trades and aggregates for our watchlist
+      // Clear any old subscriptions first
+      polygonWS.clearSubscriptions();
+
+      // Subscribe to stock aggregates for our watchlist
       // Starter plan has limits - only subscribe to top tickers
       const tickersToStream = [...new Set([
         ...config.topTickers.slice(0, 15), // Top 15 most liquid (Starter plan limit)

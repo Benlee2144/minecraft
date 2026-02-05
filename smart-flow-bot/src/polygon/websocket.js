@@ -197,7 +197,14 @@ class PolygonWebSocket extends EventEmitter {
 
   resubscribe() {
     if (this.subscribedChannels.size > 0) {
-      const channels = Array.from(this.subscribedChannels);
+      // Limit to 20 channels max for Starter plan
+      const allChannels = Array.from(this.subscribedChannels);
+      const channels = allChannels.slice(0, 20);
+
+      // Clear and re-add only the limited set
+      this.subscribedChannels.clear();
+      channels.forEach(ch => this.subscribedChannels.add(ch));
+
       const subscribeMessage = {
         action: 'subscribe',
         params: channels.join(',')
@@ -206,6 +213,12 @@ class PolygonWebSocket extends EventEmitter {
       this.send(subscribeMessage);
       logger.info('Resubscribed to channels', { count: channels.length });
     }
+  }
+
+  // Clear all subscriptions
+  clearSubscriptions() {
+    this.subscribedChannels.clear();
+    logger.info('Cleared all WebSocket subscriptions');
   }
 
   // Subscribe to options trades for specific tickers
