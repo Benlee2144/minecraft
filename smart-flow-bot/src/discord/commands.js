@@ -7,6 +7,10 @@ const heatScore = require('../detection/heatScore');
 const claudeChat = require('../claude/chat');
 const polygonRest = require('../polygon/rest');
 const earningsCalendar = require('../utils/earnings');
+const keyLevels = require('../detection/keyLevels');
+const spyCorrelation = require('../detection/spyCorrelation');
+const sectorHeatMap = require('../detection/sectorHeatMap');
+const marketHours = require('../utils/marketHours');
 
 class DiscordCommands {
   constructor() {
@@ -143,6 +147,56 @@ class DiscordCommands {
           .setDescription('Show all upcoming earnings this week')
       );
 
+    // /risk command (position size calculator)
+    const riskCommand = new SlashCommandBuilder()
+      .setName('risk')
+      .setDescription('Calculate position size based on risk')
+      .addNumberOption(option =>
+        option
+          .setName('account')
+          .setDescription('Your account size in dollars')
+          .setRequired(true)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('risk_percent')
+          .setDescription('Risk percentage per trade (e.g., 1 or 2)')
+          .setRequired(true)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('entry')
+          .setDescription('Entry price')
+          .setRequired(true)
+      )
+      .addNumberOption(option =>
+        option
+          .setName('stop')
+          .setDescription('Stop loss price')
+          .setRequired(true)
+      );
+
+    // /sectors command (sector heat map)
+    const sectorsCommand = new SlashCommandBuilder()
+      .setName('sectors')
+      .setDescription('Show sector heat map - which sectors are hot/cold');
+
+    // /levels command (key levels for a ticker)
+    const levelsCommand = new SlashCommandBuilder()
+      .setName('levels')
+      .setDescription('Show key levels for a ticker')
+      .addStringOption(option =>
+        option
+          .setName('ticker')
+          .setDescription('The ticker symbol')
+          .setRequired(true)
+      );
+
+    // /spy command (SPY status and market direction)
+    const spyCommand = new SlashCommandBuilder()
+      .setName('spy')
+      .setDescription('Show current SPY status and market direction');
+
     this.commands = [
       watchlistCommand,
       flowCommand,
@@ -153,7 +207,11 @@ class DiscordCommands {
       clearCommand,
       ideaCommand,
       perfCommand,
-      earningsCommand
+      earningsCommand,
+      riskCommand,
+      sectorsCommand,
+      levelsCommand,
+      spyCommand
     ];
   }
 
@@ -222,6 +280,18 @@ class DiscordCommands {
           break;
         case 'earnings':
           await this.handleEarnings(interaction);
+          break;
+        case 'risk':
+          await this.handleRisk(interaction);
+          break;
+        case 'sectors':
+          await this.handleSectors(interaction);
+          break;
+        case 'levels':
+          await this.handleLevels(interaction);
+          break;
+        case 'spy':
+          await this.handleSpy(interaction);
           break;
         default:
           await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -608,6 +678,305 @@ class DiscordCommands {
         await interaction.reply({ embeds: [embed], ephemeral: true });
         break;
       }
+    }
+  }
+
+  // Handle /risk command (position size calculator)
+  async handleRisk(interaction) {
+    const account = interaction.options.getNumber('account');
+    const riskPercent = interaction.options.getNumber('risk_percent');
+    const entry = interaction.options.getNumber('entry');
+    const stop = interaction.options.getNumber('stop');
+
+    // Calculate risk per share
+    const riskPerShare = Math.abs(entry - stop);
+    if (riskPerShare === 0) {
+      await interaction.reply({
+        content: 'Entry and stop cannot be the same price.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    // Calculate position size
+    const riskAmount = account * (riskPercent / 100);
+    const shares = Math.floor(riskAmount / riskPerShare);
+    const positionValue = shares * entry;
+    const maxLoss = shares * riskPerShare;
+
+    // Direction
+    const isLong = entry > stop;
+    const direction = isLong ? '🟢 LONG' : '🔴 SHORT';
+
+    const { EmbedBuilder } = require('discord.js');
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Position Size Calculator')
+      .setColor(isLong ? 0x00FF00 : 0xFF0000)
+      .addFields(
+        { name: 'Direction', value: direction, inline: true },
+        { name: 'Entry Price', value: `$${entry.toFixed(2)}`, inline: true },
+        { name: 'Stop Loss', value: `$${stop.toFixed(2)}`, inline: true },
+        { name: '📈 Position Size', value: `**${shares} shares**`, inline: true },
+        { name: '💰 Position Value', value: `$${positionValue.toFixed(2)}`, inline: true },
+        { name: '⚠️ Max Loss', value: `$${maxLoss.toFixed(2)} (${riskPercent}%)`, inline: true }
+      )
+      .addFields({
+        name: '📝 Summary',
+        value: `With a **$${account.toLocaleString()}** account risking **${riskPercent}%** ($${riskAmount.toFixed(2)}):\n` +
+               `Buy **${shares} shares** at $${entry.toFixed(2)}\n` +
+               `Stop at $${stop.toFixed(2)} (${(riskPerShare / entry * 100).toFixed(1)}% risk per share)`,
+        inline: false
+      })
+      .setFooter({ text: 'Not financial advice - always manage your risk' })
+      .setTimestamp();
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
+  // Handle /sectors command (sector heat map)
+  async handleSectors(interaction) {
+    await interaction.deferReply();
+
+    try {
+      // Update sector data
+      await sectorHeatMap.updateSectors();
+
+      const { EmbedBuilder } = require('discord.js');
+      const embed = new EmbedBuilder()
+        .setTitle('🌡️ Sector Heat Map')
+        .setColor(0x3498DB)
+        .setTimestamp();
+
+      // Get ranking
+      const ranking = sectorHeatMap.getRanking();
+
+      if (ranking.length === 0) {
+        await interaction.editReply('No sector data available. Try again during market hours.');
+        return;
+      }
+
+      // Format heat map
+      const heatMapText = ranking.map((s, i) => {
+        const bar = s.change > 0.5 ? '🟢🟢' : (s.change > 0 ? '🟢' : (s.change < -0.5 ? '🔴🔴' : (s.change < 0 ? '🔴' : '⚪')));
+        const changeStr = `${s.change > 0 ? '+' : ''}${s.change.toFixed(2)}%`;
+        const rank = i < 3 ? ['🥇', '🥈', '🥉'][i] : `${i + 1}.`;
+        return `${rank} ${s.emoji} **${s.name}** (${s.etf}): ${bar} ${changeStr}`;
+      }).join('\n');
+
+      embed.setDescription(heatMapText);
+
+      // Add summary
+      const hot = sectorHeatMap.getHotSectors();
+      const cold = sectorHeatMap.getColdSectors();
+
+      let summary = '';
+      if (hot.length > 0) {
+        summary += `🔥 **Hot:** ${hot.map(s => s.name).join(', ')}\n`;
+      }
+      if (cold.length > 0) {
+        summary += `❄️ **Cold:** ${cold.map(s => s.name).join(', ')}`;
+      }
+
+      if (summary) {
+        embed.addFields({ name: 'Summary', value: summary, inline: false });
+      }
+
+      // Add trading phase
+      const phase = marketHours.getTradingPhase();
+      embed.setFooter({ text: `${phase.emoji} ${phase.label} | ${marketHours.formatTimeET()}` });
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /sectors command', { error: error.message });
+      await interaction.editReply('Error fetching sector data.');
+    }
+  }
+
+  // Handle /levels command (key levels)
+  async handleLevels(interaction) {
+    await interaction.deferReply();
+
+    const ticker = interaction.options.getString('ticker').toUpperCase();
+
+    try {
+      // Fetch current data
+      const [snapshot, prevClose] = await Promise.all([
+        polygonRest.getStockSnapshot(ticker),
+        polygonRest.getPreviousClose(ticker)
+      ]);
+
+      if (!snapshot) {
+        await interaction.editReply(`Could not fetch data for ${ticker}`);
+        return;
+      }
+
+      // Calculate levels
+      const levels = keyLevels.calculateLevels(ticker, snapshot, prevClose);
+
+      const { EmbedBuilder } = require('discord.js');
+      const embed = new EmbedBuilder()
+        .setTitle(`📊 Key Levels: ${ticker}`)
+        .setColor(0x9B59B6)
+        .setTimestamp();
+
+      // Current price
+      embed.addFields({
+        name: '💵 Current Price',
+        value: `**$${levels.currentPrice?.toFixed(2) || 'N/A'}**`,
+        inline: true
+      });
+
+      // Previous day levels
+      const pdLevels = [];
+      if (levels.pdh) pdLevels.push(`PDH: $${levels.pdh.toFixed(2)}`);
+      if (levels.pdl) pdLevels.push(`PDL: $${levels.pdl.toFixed(2)}`);
+      if (levels.pdc) pdLevels.push(`PDC: $${levels.pdc.toFixed(2)}`);
+
+      if (pdLevels.length > 0) {
+        embed.addFields({
+          name: '📅 Previous Day',
+          value: pdLevels.join('\n'),
+          inline: true
+        });
+      }
+
+      // VWAP
+      if (levels.vwap) {
+        const vwapDist = ((levels.currentPrice - levels.vwap) / levels.vwap * 100).toFixed(2);
+        const vwapStatus = levels.currentPrice > levels.vwap ? '🟢 Above' : '🔴 Below';
+        embed.addFields({
+          name: '📈 VWAP',
+          value: `$${levels.vwap.toFixed(2)}\n${vwapStatus} (${vwapDist}%)`,
+          inline: true
+        });
+      }
+
+      // Round numbers
+      if (levels.roundLevels && levels.roundLevels.length > 0) {
+        const roundsText = levels.roundLevels
+          .filter(r => r.type === 'major')
+          .map(r => {
+            const dist = parseFloat(r.distance);
+            const arrow = dist > 0 ? '↑' : '↓';
+            return `$${r.price} (${arrow}${Math.abs(dist).toFixed(1)}%)`;
+          })
+          .join(' | ');
+
+        embed.addFields({
+          name: '🎯 Key Round Numbers',
+          value: roundsText || 'None nearby',
+          inline: false
+        });
+      }
+
+      // Proximity alerts
+      const proximity = keyLevels.getProximityInfo(ticker, levels.currentPrice);
+      if (proximity && proximity.length > 0) {
+        const proxText = proximity.map(p =>
+          `⚠️ **${p.distance}%** ${p.direction} ${p.level} ($${p.price.toFixed(2)})`
+        ).join('\n');
+
+        embed.addFields({
+          name: '🎯 Near Key Levels',
+          value: proxText,
+          inline: false
+        });
+      }
+
+      // TradingView link
+      embed.addFields({
+        name: '📊 Chart',
+        value: `[View on TradingView](https://www.tradingview.com/chart/?symbol=${ticker})`,
+        inline: false
+      });
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /levels command', { error: error.message });
+      await interaction.editReply('Error fetching key levels.');
+    }
+  }
+
+  // Handle /spy command (market direction)
+  async handleSpy(interaction) {
+    await interaction.deferReply();
+
+    try {
+      // Update SPY data
+      await spyCorrelation.updateSPY();
+      const spy = spyCorrelation.getSPY();
+
+      if (!spy.price) {
+        await interaction.editReply('Could not fetch SPY data. Try again.');
+        return;
+      }
+
+      const { EmbedBuilder } = require('discord.js');
+      const directionEmoji = spy.direction === 'bullish' ? '🟢' : (spy.direction === 'bearish' ? '🔴' : '🟡');
+      const color = spy.direction === 'bullish' ? 0x00FF00 : (spy.direction === 'bearish' ? 0xFF0000 : 0xFFFF00);
+
+      const embed = new EmbedBuilder()
+        .setTitle(`${directionEmoji} SPY Market Status`)
+        .setColor(color)
+        .setTimestamp();
+
+      embed.addFields(
+        { name: '💵 Price', value: `**$${spy.price.toFixed(2)}**`, inline: true },
+        { name: '📊 Change', value: `${spy.changePercent > 0 ? '+' : ''}${spy.changePercent?.toFixed(2)}%`, inline: true },
+        { name: '📈 Direction', value: spy.direction?.toUpperCase() || 'NEUTRAL', inline: true }
+      );
+
+      // Trend
+      const trend = spyCorrelation.getSPYTrend();
+      const trendEmoji = trend === 'up' ? '📈' : (trend === 'down' ? '📉' : '➡️');
+      embed.addFields({
+        name: `${trendEmoji} Short-term Trend`,
+        value: trend.toUpperCase(),
+        inline: true
+      });
+
+      // VWAP status
+      if (spy.vwap) {
+        const vwapStatus = spy.price > spy.vwap ? '🟢 Above VWAP' : '🔴 Below VWAP';
+        embed.addFields({
+          name: '📊 VWAP',
+          value: `$${spy.vwap.toFixed(2)}\n${vwapStatus}`,
+          inline: true
+        });
+      }
+
+      // Trading phase
+      const phase = marketHours.getTradingPhase();
+      embed.addFields({
+        name: `${phase.emoji} Trading Phase`,
+        value: `**${phase.label}**\n${phase.description || ''}`,
+        inline: false
+      });
+
+      // Trading recommendation
+      let recommendation = '';
+      if (spy.direction === 'bullish' && phase.phase === 'power_hour') {
+        recommendation = '🔥 **Momentum Long** - Strong bulls + Power Hour';
+      } else if (spy.direction === 'bearish' && phase.phase === 'power_hour') {
+        recommendation = '🔥 **Momentum Short** - Strong bears + Power Hour';
+      } else if (phase.phase === 'midday') {
+        recommendation = '😴 **Caution** - Midday chop, wait for direction';
+      } else if (phase.phase === 'opening_drive') {
+        recommendation = '⚡ **High Vol** - Opening volatility, trade with trend';
+      } else {
+        recommendation = '👀 **Neutral** - Wait for clear direction';
+      }
+
+      embed.addFields({
+        name: '💡 Market Bias',
+        value: recommendation,
+        inline: false
+      });
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /spy command', { error: error.message });
+      await interaction.editReply('Error fetching SPY data.');
     }
   }
 }

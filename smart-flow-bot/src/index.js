@@ -8,6 +8,9 @@ const polygonRest = require('./polygon/rest');
 
 // Stock Detection modules
 const stockHeatScore = require('./detection/stockHeatScore');
+const keyLevels = require('./detection/keyLevels');
+const spyCorrelation = require('./detection/spyCorrelation');
+const sectorHeatMap = require('./detection/sectorHeatMap');
 
 // Data modules
 const earningsCalendar = require('./utils/earnings');
@@ -21,12 +24,14 @@ class SmartStockScanner {
     this.isMonitoring = false;
     this.marketCheckInterval = null;
     this.pollingInterval = null;
+    this.sectorUpdateInterval = null;
     this.lastSnapshots = new Map(); // Track previous snapshots for change detection
     this.volumeBaselines = new Map();
     this.previousCloses = new Map();
     this.alertCooldowns = new Map(); // Throttle alerts per ticker
     this.alertCooldownMs = 60000; // 60 second cooldown per ticker (polling is slower)
     this.pollIntervalMs = 30000; // Poll every 30 seconds
+    this.sectorUpdateIntervalMs = 120000; // Update sectors every 2 minutes
   }
 
   async start() {
@@ -164,15 +169,54 @@ class SmartStockScanner {
     // Reset daily tracking
     database.cleanOldHeatHistory();
     this.alertCooldowns.clear();
+    keyLevels.cleanOldAlerts();
 
     // Refresh previous closes for new day
     await this.loadPreviousCloses();
+
+    // Calculate key levels for tracked tickers
+    logger.info('Calculating key levels...');
+    await this.calculateAllKeyLevels();
+
+    // Initial SPY update
+    logger.info('Fetching initial SPY data...');
+    await spyCorrelation.updateSPY();
+
+    // Initial sector update
+    logger.info('Fetching sector data...');
+    await sectorHeatMap.updateSectors();
 
     // Start polling
     logger.info('Starting REST API polling...');
     this.startPolling();
 
+    // Start sector update interval
+    this.startSectorUpdates();
+
     logger.info('Monitoring started');
+  }
+
+  // Calculate key levels for all tracked tickers
+  async calculateAllKeyLevels() {
+    for (const [ticker, prevClose] of this.previousCloses) {
+      const snapshot = await polygonRest.getStockSnapshot(ticker);
+      if (snapshot) {
+        keyLevels.calculateLevels(ticker, snapshot, prevClose);
+      }
+      await this.sleep(50);
+    }
+    logger.info(`Calculated key levels for ${this.previousCloses.size} tickers`);
+  }
+
+  // Start periodic sector updates
+  startSectorUpdates() {
+    this.sectorUpdateInterval = setInterval(async () => {
+      if (this.isMonitoring && marketHours.isMarketOpen()) {
+        await spyCorrelation.updateSPY();
+        await sectorHeatMap.updateSectors();
+        logger.debug('Updated SPY and sector data');
+      }
+    }, this.sectorUpdateIntervalMs);
   }
 
   stopMonitoring() {
@@ -182,6 +226,12 @@ class SmartStockScanner {
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
       this.pollingInterval = null;
+    }
+
+    // Stop sector updates
+    if (this.sectorUpdateInterval) {
+      clearInterval(this.sectorUpdateInterval);
+      this.sectorUpdateInterval = null;
     }
 
     // Send daily summary
@@ -206,6 +256,15 @@ class SmartStockScanner {
   async pollMarketData() {
     try {
       logger.debug('Polling market data...');
+
+      // Update SPY first (important for alignment checking)
+      await spyCorrelation.updateSPY();
+
+      // Log trading phase periodically
+      const phase = marketHours.getTradingPhase();
+      if (phase.phase !== 'closed') {
+        logger.debug(`Trading phase: ${phase.label} (${phase.emoji}) - Heat bonus: ${phase.heatBonus > 0 ? '+' : ''}${phase.heatBonus}`);
+      }
 
       // Get gainers and losers (these are often the most interesting)
       const [gainers, losers] = await Promise.all([
@@ -393,6 +452,30 @@ class SmartStockScanner {
       }
     }
 
+    // 6. Key Level Break Detection
+    if (lastSnapshot?.price && snapshot.price) {
+      // Update key levels if we have previous close data
+      const prevClose = this.previousCloses.get(ticker);
+      if (prevClose) {
+        keyLevels.calculateLevels(ticker, snapshot, prevClose);
+      }
+
+      // Check for level breaks
+      const levelBreaks = keyLevels.checkLevelBreak(ticker, snapshot.price, lastSnapshot.price);
+      for (const levelBreak of levelBreaks) {
+        signals.push({
+          type: 'level_break',
+          ticker,
+          price: snapshot.price,
+          level: levelBreak.level,
+          levelType: levelBreak.type,
+          direction: levelBreak.direction,
+          severity: levelBreak.significance === 'high' ? 'high' : 'medium',
+          description: `${levelBreak.emoji} ${levelBreak.label} at $${levelBreak.level.toFixed(2)}`
+        });
+      }
+    }
+
     return signals;
   }
 
@@ -417,8 +500,56 @@ class SmartStockScanner {
 
     const heatResult = stockHeatScore.calculate(signal, context);
 
+    // Apply time-based heat bonus
+    const tradingPhase = marketHours.getTradingPhase();
+    const timeBonus = tradingPhase.heatBonus || 0;
+    if (timeBonus !== 0) {
+      heatResult.heatScore += timeBonus;
+      heatResult.breakdown.timeBonus = timeBonus;
+      heatResult.breakdown.tradingPhase = tradingPhase.label;
+    }
+
+    // Check SPY alignment
+    const spyAlignment = spyCorrelation.checkAlignment(
+      signal.priceChange || signal.todayChangePercent || 0,
+      signal.direction
+    );
+
+    // Penalize signals moving against SPY trend (unless strong relative strength)
+    if (!spyAlignment.aligned && spyAlignment.confidence === 'low') {
+      heatResult.heatScore -= 10;
+      heatResult.breakdown.spyPenalty = -10;
+      heatResult.spyWarning = spyAlignment.warning;
+    } else if (spyAlignment.type === 'relative_strength') {
+      heatResult.heatScore += 10;
+      heatResult.breakdown.relativeStrengthBonus = 10;
+    }
+
+    // Add SPY context
+    heatResult.spyContext = spyCorrelation.getSPYContext();
+
+    // Add sector context
+    const sectorContext = sectorHeatMap.getSectorContext(ticker);
+    if (sectorContext) {
+      heatResult.sectorContext = sectorContext;
+      // Bonus for being in a hot sector
+      if (sectorContext.isLeader) {
+        heatResult.heatScore += 5;
+        heatResult.breakdown.sectorBonus = 5;
+      }
+    }
+
+    // Add key levels info
+    const levelsInfo = keyLevels.formatLevelsForAlert(ticker);
+    if (levelsInfo) {
+      heatResult.keyLevels = levelsInfo;
+    }
+
+    // Cap heat score at 100
+    heatResult.heatScore = Math.min(100, Math.max(0, heatResult.heatScore));
+
     // Check if meets threshold
-    if (!heatResult.meetsThreshold) {
+    if (!heatResult.meetsThreshold && heatResult.heatScore < config.heatScore.minThreshold) {
       // Check if ticker is on any watchlist (lower threshold)
       const watchedTickers = discordBot.getAllWatchedTickers();
       if (watchedTickers.includes(ticker) && heatResult.heatScore >= config.heatScore.watchlistThreshold) {
@@ -431,6 +562,20 @@ class SmartStockScanner {
         });
         return;
       }
+    }
+
+    // Re-check if signal now meets threshold after bonuses
+    if (heatResult.heatScore >= config.heatScore.highConvictionThreshold) {
+      heatResult.meetsThreshold = true;
+      heatResult.isHighConviction = true;
+      heatResult.channel = 'high-conviction';
+    } else if (heatResult.heatScore >= config.heatScore.minThreshold) {
+      heatResult.meetsThreshold = true;
+      heatResult.channel = 'flow-alerts';
+    }
+
+    if (!heatResult.meetsThreshold) {
+      return;
     }
 
     // Update cooldown
@@ -464,16 +609,30 @@ class SmartStockScanner {
   }
 
   getStatus() {
+    const phase = marketHours.getTradingPhase();
+    const spyData = spyCorrelation.getSPYContext();
+
     return {
       polygonConnected: true, // REST API is stateless
       polygonAuthenticated: true,
       tickersMonitored: config.topTickers.length,
       baselinesLoaded: this.volumeBaselines.size,
+      keyLevelsLoaded: keyLevels.levels?.size || 0,
       marketOpen: marketHours.isMarketOpen(),
       isMonitoring: this.isMonitoring,
       uptime: process.uptime(),
       dataSource: 'REST API (Polling)',
-      pollInterval: `${this.pollIntervalMs / 1000}s`
+      pollInterval: `${this.pollIntervalMs / 1000}s`,
+      tradingPhase: phase.label,
+      tradingPhaseEmoji: phase.emoji,
+      heatBonus: phase.heatBonus || 0,
+      spyDirection: spyData.available ? spyData.direction : 'unknown',
+      spyChange: spyData.available ? spyData.change : null,
+      marketStatus: {
+        phase: phase.phase,
+        description: phase.description,
+        spy: spyData
+      }
     };
   }
 
@@ -492,6 +651,10 @@ class SmartStockScanner {
 
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
+    }
+
+    if (this.sectorUpdateInterval) {
+      clearInterval(this.sectorUpdateInterval);
     }
 
     // Shutdown components

@@ -339,6 +339,41 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
     return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
+  // Format level break alert
+  formatLevelBreakAlert(signal, heatResult) {
+    const direction = signal.direction === 'up' ? '🔺' : '🔻';
+    const color = signal.direction === 'up' ? 0x00FF00 : 0xFF0000;
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${direction} LEVEL BREAK - ${signal.ticker}`)
+      .setColor(color)
+      .setTimestamp();
+
+    embed.addFields(
+      { name: '🔥 Heat Score', value: `**${heatResult.heatScore}/100**`, inline: true },
+      { name: '💵 Price', value: `$${signal.price?.toFixed(2) || 'N/A'}`, inline: true },
+      { name: '📏 Level', value: `$${signal.level?.toFixed(2) || 'N/A'}`, inline: true }
+    );
+
+    embed.addFields({
+      name: '📊 Level Type',
+      value: signal.description || `${signal.levelType} break`,
+      inline: false
+    });
+
+    const breakdownText = heatResult.breakdown
+      .map(b => `• ${b.signal} (+${b.points})`)
+      .join('\n');
+
+    embed.addFields({
+      name: '📈 Signal Breakdown',
+      value: breakdownText || 'Level break detected',
+      inline: false
+    });
+
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
+  }
+
   // Generic format alert based on signal type
   formatAlert(signal, heatResult) {
     switch (signal.type) {
@@ -357,6 +392,8 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
         return this.formatVWAPAlert(signal, heatResult);
       case 'relative_strength':
         return this.formatRelativeStrengthAlert(signal, heatResult);
+      case 'level_break':
+        return this.formatLevelBreakAlert(signal, heatResult);
       default:
         return this.formatStockAlert(heatResult);
     }
@@ -580,10 +617,34 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
         '• VWAP Crosses',
         '• Gap Detection',
         '• New Highs/Lows',
+        '• Key Level Breaks (PDH/PDL)',
         '• Top Gainers/Losers'
       ].join('\n'),
-      inline: false
+      inline: true
     });
+
+    // Pro features
+    embed.addFields({
+      name: '⚡ Pro Features',
+      value: [
+        '• SPY Correlation Filter',
+        '• Sector Heat Map',
+        '• Trading Phase Bonuses',
+        '• Power Hour/Opening Drive',
+        '• Relative Strength Detection'
+      ].join('\n'),
+      inline: true
+    });
+
+    // Trading phase
+    const phase = marketHours.getTradingPhase();
+    if (status.marketOpen && phase.phase !== 'closed') {
+      embed.addFields({
+        name: '⏰ Current Phase',
+        value: `${phase.emoji} ${phase.label}\n${phase.description || ''}`,
+        inline: false
+      });
+    }
 
     embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
     return embed;
@@ -685,10 +746,63 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
 
   // Helper: Add final fields to alert embed (chart, earnings, footer)
   finalizeAlertEmbed(embed, ticker, heatResult = {}) {
+    // Add market context (SPY + Sector) on one line
+    const contextParts = [];
+
+    // SPY context
+    if (heatResult.spyContext?.available) {
+      const spy = heatResult.spyContext;
+      contextParts.push(`SPY: ${spy.emoji} ${spy.change > 0 ? '+' : ''}${spy.change}%`);
+    }
+
+    // Sector context
+    if (heatResult.sectorContext) {
+      const sec = heatResult.sectorContext;
+      const rankText = sec.isLeader ? '🔥' : sec.isLaggard ? '❄️' : '';
+      contextParts.push(`${sec.emoji} ${sec.name}: ${sec.change > 0 ? '+' : ''}${sec.change}% ${rankText}`);
+    }
+
+    if (contextParts.length > 0) {
+      embed.addFields({
+        name: '🌍 Market Context',
+        value: contextParts.join(' | '),
+        inline: false
+      });
+    }
+
+    // Key levels
+    if (heatResult.keyLevels) {
+      embed.addFields({
+        name: '📏 Key Levels',
+        value: heatResult.keyLevels,
+        inline: false
+      });
+    }
+
+    // SPY warning if moving against market
+    if (heatResult.spyWarning) {
+      embed.addFields({
+        name: '⚠️ Market Warning',
+        value: heatResult.spyWarning,
+        inline: false
+      });
+    }
+
+    // Trading phase bonus/penalty
+    if (heatResult.breakdown?.tradingPhase) {
+      const bonus = heatResult.breakdown.timeBonus;
+      const bonusText = bonus > 0 ? `+${bonus}` : bonus;
+      embed.addFields({
+        name: '⏰ Trading Phase',
+        value: `${heatResult.breakdown.tradingPhase} (${bonusText} heat)`,
+        inline: true
+      });
+    }
+
     // Add earnings warning if present
     if (heatResult.earningsWarning) {
       embed.addFields({
-        name: '⚠️ Earnings Alert',
+        name: '📅 Earnings Alert',
         value: heatResult.earningsWarning,
         inline: false
       });
@@ -740,7 +854,8 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       'vwap_cross': '📈',
       'new_high': '🏔️',
       'new_low': '🕳️',
-      'relative_strength': '💪'
+      'relative_strength': '💪',
+      'level_break': '📏'
     };
     return emojis[type] || '📊';
   }
@@ -757,7 +872,8 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       'vwap_cross': 'VWAP Cross',
       'new_high': 'New High',
       'new_low': 'New Low',
-      'relative_strength': 'Relative Strength'
+      'relative_strength': 'Relative Strength',
+      'level_break': 'Level Break'
     };
     return names[type] || type;
   }
