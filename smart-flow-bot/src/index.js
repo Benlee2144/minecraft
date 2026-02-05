@@ -1033,8 +1033,11 @@ class SmartStockScanner {
     // Cap heat score at 100
     heatResult.heatScore = Math.min(100, Math.max(0, heatResult.heatScore));
 
+    // Log all signals for debugging
+    logger.info(`Signal: ${ticker} ${signal.type} | Heat: ${heatResult.heatScore} | Threshold: ${config.heatScore.alertThreshold}`);
+
     // Check if meets threshold
-    if (!heatResult.meetsThreshold && heatResult.heatScore < config.heatScore.minThreshold) {
+    if (!heatResult.meetsThreshold && heatResult.heatScore < config.heatScore.alertThreshold) {
       // Check if ticker is on any watchlist (lower threshold)
       const watchedTickers = discordBot.getAllWatchedTickers();
       if (watchedTickers.includes(ticker) && heatResult.heatScore >= config.heatScore.watchlistThreshold) {
@@ -1054,7 +1057,7 @@ class SmartStockScanner {
       heatResult.meetsThreshold = true;
       heatResult.isHighConviction = true;
       heatResult.channel = 'high-conviction';
-    } else if (heatResult.heatScore >= config.heatScore.minThreshold) {
+    } else if (heatResult.heatScore >= config.heatScore.alertThreshold) {
       heatResult.meetsThreshold = true;
       heatResult.channel = 'flow-alerts';
     }
