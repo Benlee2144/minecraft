@@ -2,7 +2,7 @@ module.exports = {
   // API Keys
   polygon: {
     apiKey: process.env.POLYGON_API_KEY || 'AFm3DfCNME7kNNyi5W1VzWTHSwhELs2l',
-    wsUrl: 'wss://socket.polygon.io/stocks',  // Changed to stocks for Starter plan
+    wsUrl: 'wss://delayed.polygon.io/stocks',  // Delayed endpoint for $29 plan (15-min delay)
     restUrl: 'https://api.polygon.io'
   },
 
@@ -11,11 +11,24 @@ module.exports = {
 
   discord: {
     token: process.env.DISCORD_BOT_TOKEN || '',
-    // Channel IDs - Update these after creating your Discord server
+    // Channel IDs - Multi-channel setup for organized alerts
     channels: {
-      highConviction: process.env.HIGH_CONVICTION_CHANNEL || '',
-      flowAlerts: process.env.FLOW_ALERTS_CHANNEL || '',
-      botStatus: process.env.BOT_STATUS_CHANNEL || ''
+      // Fire alerts channel - ONLY for high confidence (90+) and strong entry (80+) signals
+      fireAlerts: process.env.FIRE_ALERTS_CHANNEL || '1468815395719741625',
+      // Flow scanner channel - Regular flow alerts, heat maps, sector updates
+      flowScanner: process.env.FLOW_SCANNER_CHANNEL || '1468815500200120492',
+      // Paper trades channel - Paper trade opens, closes, trailing stops, proximity alerts
+      paperTrades: process.env.PAPER_TRADES_CHANNEL || '1468815561453469778',
+      // Daily recap channel - End-of-day summaries and performance stats
+      dailyRecap: process.env.DAILY_RECAP_CHANNEL || '1468815629036556410',
+      // Claude chat channel - Claude AI responses from /ask commands
+      claudeChat: process.env.CLAUDE_CHAT_CHANNEL || '1468815689140928634',
+      // Pre-market channel - Gap alerts, pre-market movers (9:00-9:30 AM)
+      preMarket: process.env.PRE_MARKET_CHANNEL || '1468830284127539221',
+      // Legacy mappings for backwards compatibility
+      highConviction: process.env.HIGH_CONVICTION_CHANNEL || '1468815395719741625',
+      flowAlerts: process.env.FLOW_ALERTS_CHANNEL || '1468815500200120492',
+      botStatus: process.env.BOT_STATUS_CHANNEL || '1468815629036556410'
     }
   },
 

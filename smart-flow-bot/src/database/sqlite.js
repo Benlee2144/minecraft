@@ -106,6 +106,55 @@ class FlowDatabase {
       )
     `);
 
+    // Alert outcomes for performance tracking
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS alert_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_id INTEGER NOT NULL,
+        ticker TEXT NOT NULL,
+        signal_type TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        heat_score INTEGER NOT NULL,
+        price_5min REAL,
+        price_15min REAL,
+        price_30min REAL,
+        price_1hr REAL,
+        outcome TEXT,
+        pct_change_5min REAL,
+        pct_change_15min REAL,
+        pct_change_30min REAL,
+        pct_change_1hr REAL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Paper trades table for backtesting
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS paper_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        target_price REAL NOT NULL,
+        stop_price REAL NOT NULL,
+        option_type TEXT,
+        option_strike REAL,
+        option_expiry TEXT,
+        confidence_score INTEGER NOT NULL,
+        recommendation TEXT NOT NULL,
+        factors TEXT,
+        warnings TEXT,
+        status TEXT DEFAULT 'OPEN',
+        exit_price REAL,
+        exit_reason TEXT,
+        pnl_percent REAL,
+        pnl_dollars REAL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        closed_at DATETIME,
+        trade_date TEXT DEFAULT (DATE('now'))
+      )
+    `);
+
     // Create indexes for performance
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_alerts_ticker ON alerts(ticker);
@@ -115,6 +164,9 @@ class FlowDatabase {
       CREATE INDEX IF NOT EXISTS idx_heat_history_ticker ON heat_history(ticker);
       CREATE INDEX IF NOT EXISTS idx_heat_history_created ON heat_history(created_at);
       CREATE INDEX IF NOT EXISTS idx_watchlists_user ON watchlists(user_id);
+      CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status);
+      CREATE INDEX IF NOT EXISTS idx_paper_trades_date ON paper_trades(trade_date);
+      CREATE INDEX IF NOT EXISTS idx_paper_trades_ticker ON paper_trades(ticker);
     `);
   }
 
@@ -425,6 +477,86 @@ class FlowDatabase {
     const signalCount = this.getSignalCount(ticker, 60);
     // Simple heat calculation based on signal count
     return Math.min(100, signalCount * 20);
+  }
+
+  // ========== Performance Tracking ==========
+
+  // Save alert outcome for tracking
+  saveAlertOutcome(alertId, ticker, signalType, entryPrice, heatScore) {
+    const stmt = this.db.prepare(`
+      INSERT INTO alert_outcomes (alert_id, ticker, signal_type, entry_price, heat_score)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    return stmt.run(alertId, ticker.toUpperCase(), signalType, entryPrice, heatScore);
+  }
+
+  // Update outcome with price data
+  updateOutcomePrice(alertId, timeframe, price, pctChange) {
+    const column = `price_${timeframe}`;
+    const pctColumn = `pct_change_${timeframe}`;
+    const stmt = this.db.prepare(`
+      UPDATE alert_outcomes SET ${column} = ?, ${pctColumn} = ? WHERE alert_id = ?
+    `);
+    return stmt.run(price, pctChange, alertId);
+  }
+
+  // Get pending outcomes that need price updates
+  getPendingOutcomes(minutesAgo) {
+    const stmt = this.db.prepare(`
+      SELECT * FROM alert_outcomes
+      WHERE created_at >= datetime('now', '-' || ? || ' minutes')
+        AND created_at <= datetime('now', '-' || ? || ' minutes')
+    `);
+    return stmt.all(minutesAgo + 1, minutesAgo - 1);
+  }
+
+  // Get performance stats
+  getPerformanceStats() {
+    const stats = this.db.prepare(`
+      SELECT
+        COUNT(*) as total_alerts,
+        AVG(pct_change_5min) as avg_5min,
+        AVG(pct_change_15min) as avg_15min,
+        AVG(pct_change_30min) as avg_30min,
+        AVG(pct_change_1hr) as avg_1hr,
+        SUM(CASE WHEN pct_change_15min > 0 THEN 1 ELSE 0 END) as winners_15min,
+        SUM(CASE WHEN pct_change_15min <= 0 THEN 1 ELSE 0 END) as losers_15min,
+        SUM(CASE WHEN pct_change_1hr > 0 THEN 1 ELSE 0 END) as winners_1hr,
+        SUM(CASE WHEN pct_change_1hr <= 0 THEN 1 ELSE 0 END) as losers_1hr
+      FROM alert_outcomes
+      WHERE pct_change_15min IS NOT NULL
+    `).get();
+
+    // Stats by signal type
+    const bySignalType = this.db.prepare(`
+      SELECT
+        signal_type,
+        COUNT(*) as total,
+        AVG(pct_change_15min) as avg_15min,
+        SUM(CASE WHEN pct_change_15min > 0 THEN 1 ELSE 0 END) as winners
+      FROM alert_outcomes
+      WHERE pct_change_15min IS NOT NULL
+      GROUP BY signal_type
+      ORDER BY avg_15min DESC
+    `).all();
+
+    // Stats by heat score range
+    const byHeatScore = this.db.prepare(`
+      SELECT
+        CASE
+          WHEN heat_score >= 80 THEN 'High (80+)'
+          WHEN heat_score >= 60 THEN 'Medium (60-79)'
+          ELSE 'Low (<60)'
+        END as heat_range,
+        COUNT(*) as total,
+        AVG(pct_change_15min) as avg_15min,
+        SUM(CASE WHEN pct_change_15min > 0 THEN 1 ELSE 0 END) as winners
+      FROM alert_outcomes
+      WHERE pct_change_15min IS NOT NULL
+      GROUP BY heat_range
+    `).all();
+
+    return { ...stats, bySignalType, byHeatScore };
   }
 
   // ========== Cleanup ==========

@@ -4,7 +4,7 @@ const marketHours = require('../utils/marketHours');
 class DiscordFormatters {
 
   // Format a stock alert for Discord
-  formatStockAlert(heatResult) {
+  formatStockAlert(heatResult, options = {}) {
     const isHighConviction = heatResult.heatScore >= 80;
     const emoji = this.getSignalEmoji(heatResult.signalType);
     const title = isHighConviction
@@ -57,8 +57,34 @@ class DiscordFormatters {
       inline: false
     });
 
+    // AI Analysis (if provided)
+    if (options.aiAnalysis) {
+      embed.addFields({
+        name: '🤖 AI Analysis',
+        value: options.aiAnalysis.substring(0, 1000),
+        inline: false
+      });
+    }
+
+    // Earnings warning (if near earnings)
+    if (options.earningsWarning) {
+      embed.addFields({
+        name: '⚠️ Earnings Alert',
+        value: options.earningsWarning,
+        inline: false
+      });
+    }
+
+    // TradingView chart link
+    const chartUrl = `https://www.tradingview.com/chart/?symbol=${heatResult.ticker}`;
+    embed.addFields({
+      name: '📊 Chart',
+      value: `[View on TradingView](${chartUrl})`,
+      inline: true
+    });
+
     // Time
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
+    embed.setFooter({ text: `${marketHours.formatTimeET()} ET | Alert ID: ${options.alertId || 'N/A'}` });
 
     return embed;
   }
@@ -116,9 +142,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format block trade alert
@@ -153,9 +177,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format momentum surge alert
@@ -190,9 +212,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format breakout alert
@@ -220,9 +240,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format gap alert
@@ -257,9 +275,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format VWAP cross alert
@@ -288,9 +304,7 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
-
-    return embed;
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Format relative strength alert
@@ -322,9 +336,42 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       inline: false
     });
 
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
+  }
 
-    return embed;
+  // Format level break alert
+  formatLevelBreakAlert(signal, heatResult) {
+    const direction = signal.direction === 'up' ? '🔺' : '🔻';
+    const color = signal.direction === 'up' ? 0x00FF00 : 0xFF0000;
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${direction} LEVEL BREAK - ${signal.ticker}`)
+      .setColor(color)
+      .setTimestamp();
+
+    embed.addFields(
+      { name: '🔥 Heat Score', value: `**${heatResult.heatScore}/100**`, inline: true },
+      { name: '💵 Price', value: `$${signal.price?.toFixed(2) || 'N/A'}`, inline: true },
+      { name: '📏 Level', value: `$${signal.level?.toFixed(2) || 'N/A'}`, inline: true }
+    );
+
+    embed.addFields({
+      name: '📊 Level Type',
+      value: signal.description || `${signal.levelType} break`,
+      inline: false
+    });
+
+    const breakdownText = heatResult.breakdown
+      .map(b => `• ${b.signal} (+${b.points})`)
+      .join('\n');
+
+    embed.addFields({
+      name: '📈 Signal Breakdown',
+      value: breakdownText || 'Level break detected',
+      inline: false
+    });
+
+    return this.finalizeAlertEmbed(embed, signal.ticker, heatResult);
   }
 
   // Generic format alert based on signal type
@@ -345,6 +392,8 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
         return this.formatVWAPAlert(signal, heatResult);
       case 'relative_strength':
         return this.formatRelativeStrengthAlert(signal, heatResult);
+      case 'level_break':
+        return this.formatLevelBreakAlert(signal, heatResult);
       default:
         return this.formatStockAlert(heatResult);
     }
@@ -568,10 +617,34 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
         '• VWAP Crosses',
         '• Gap Detection',
         '• New Highs/Lows',
+        '• Key Level Breaks (PDH/PDL)',
         '• Top Gainers/Losers'
       ].join('\n'),
-      inline: false
+      inline: true
     });
+
+    // Pro features
+    embed.addFields({
+      name: '⚡ Pro Features',
+      value: [
+        '• SPY Correlation Filter',
+        '• Sector Heat Map',
+        '• Trading Phase Bonuses',
+        '• Power Hour/Opening Drive',
+        '• Relative Strength Detection'
+      ].join('\n'),
+      inline: true
+    });
+
+    // Trading phase
+    const phase = marketHours.getTradingPhase();
+    if (status.marketOpen && phase.phase !== 'closed') {
+      embed.addFields({
+        name: '⏰ Current Phase',
+        value: `${phase.emoji} ${phase.label}\n${phase.description || ''}`,
+        inline: false
+      });
+    }
 
     embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
     return embed;
@@ -610,40 +683,330 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
 
     // Alert stats
     embed.addFields({
-      name: 'Alerts Today',
-      value: `Total: ${stats.total_alerts || 0}\nHigh Conviction: ${stats.high_conviction || 0}`,
+      name: '🔔 Alerts Today',
+      value: `**${stats.total_alerts || 0}** total alerts\n🔴 High Conviction: **${stats.high_conviction || 0}**\n🟡 Standard: **${stats.standard_alerts || 0}**`,
       inline: true
     });
 
+    // Unique tickers
+    embed.addFields({
+      name: '📈 Coverage',
+      value: `**${stats.unique_tickers || 0}** unique tickers\nAvg Heat: **${(stats.avg_heat_score || 0).toFixed(0)}**/100`,
+      inline: true
+    });
+
+    // Top tickers by alert count
+    if (stats.topTickers && stats.topTickers.length > 0) {
+      const topText = stats.topTickers.slice(0, 5).map((t, i) => {
+        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '•';
+        return `${medal} **${t.ticker}**: ${t.alert_count} alerts (${t.max_score} heat)`;
+      }).join('\n');
+
+      embed.addFields({
+        name: '🏆 Most Active Tickers',
+        value: topText,
+        inline: false
+      });
+    }
+
     // Signal breakdown
-    if (stats.signalBreakdown) {
+    if (stats.signalBreakdown && Object.keys(stats.signalBreakdown).length > 0) {
       const breakdown = Object.entries(stats.signalBreakdown)
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
-        .map(([type, count]) => `${this.formatSignalType(type)}: ${count}`)
+        .map(([type, count]) => `• ${this.formatSignalType(type)}: **${count}**`)
         .join('\n');
 
       embed.addFields({
-        name: 'Top Signal Types',
+        name: '📊 Signal Types',
         value: breakdown || 'N/A',
         inline: true
       });
     }
 
-    // Top movers
-    if (stats.topMovers && stats.topMovers.length > 0) {
-      const moversText = stats.topMovers.slice(0, 5).map(m =>
-        `${m.ticker}: ${m.change > 0 ? '+' : ''}${m.change.toFixed(2)}%`
-      ).join('\n');
-
+    // Total volume
+    if (stats.total_volume) {
       embed.addFields({
-        name: 'Top Movers',
-        value: moversText,
+        name: '💰 Volume Tracked',
+        value: `$${this.formatNumber(stats.total_volume)}`,
         inline: true
       });
     }
 
+    // Add tips for tomorrow
+    embed.addFields({
+      name: '💡 Tip',
+      value: 'Use `/perf` to see how today\'s alerts performed. Add tickers with `/watchlist add` to get alerts at lower thresholds.',
+      inline: false
+    });
+
+    embed.setFooter({ text: `Market Close - ${marketHours.formatTimeET()} ET | See you tomorrow!` });
+    return embed;
+  }
+
+  // Helper: Add final fields to alert embed (chart, earnings, footer)
+  finalizeAlertEmbed(embed, ticker, heatResult = {}) {
+    // Add trade recommendation if present
+    if (heatResult.recommendation) {
+      const rec = heatResult.recommendation;
+      const recEmbed = this.formatRecommendationField(rec);
+      embed.addFields({
+        name: `${rec.recommendation.emoji} Bot's Trade Idea`,
+        value: recEmbed,
+        inline: false
+      });
+    }
+
+    // Add market context (SPY + Sector) on one line
+    const contextParts = [];
+
+    // SPY context
+    if (heatResult.spyContext?.available) {
+      const spy = heatResult.spyContext;
+      contextParts.push(`SPY: ${spy.emoji} ${spy.change > 0 ? '+' : ''}${spy.change}%`);
+    }
+
+    // Sector context
+    if (heatResult.sectorContext) {
+      const sec = heatResult.sectorContext;
+      const rankText = sec.isLeader ? '🔥' : sec.isLaggard ? '❄️' : '';
+      contextParts.push(`${sec.emoji} ${sec.name}: ${sec.change > 0 ? '+' : ''}${sec.change}% ${rankText}`);
+    }
+
+    if (contextParts.length > 0) {
+      embed.addFields({
+        name: '🌍 Market Context',
+        value: contextParts.join(' | '),
+        inline: false
+      });
+    }
+
+    // Key levels
+    if (heatResult.keyLevels) {
+      embed.addFields({
+        name: '📏 Key Levels',
+        value: heatResult.keyLevels,
+        inline: false
+      });
+    }
+
+    // SPY warning if moving against market
+    if (heatResult.spyWarning) {
+      embed.addFields({
+        name: '⚠️ Market Warning',
+        value: heatResult.spyWarning,
+        inline: false
+      });
+    }
+
+    // Trading phase bonus/penalty
+    if (heatResult.breakdown?.tradingPhase) {
+      const bonus = heatResult.breakdown.timeBonus;
+      const bonusText = bonus > 0 ? `+${bonus}` : bonus;
+      embed.addFields({
+        name: '⏰ Trading Phase',
+        value: `${heatResult.breakdown.tradingPhase} (${bonusText} heat)`,
+        inline: true
+      });
+    }
+
+    // Add earnings warning if present
+    if (heatResult.earningsWarning) {
+      embed.addFields({
+        name: '📅 Earnings Alert',
+        value: heatResult.earningsWarning,
+        inline: false
+      });
+    }
+
+    // Add TradingView chart link
+    const chartUrl = `https://www.tradingview.com/chart/?symbol=${ticker}`;
+    embed.addFields({
+      name: '📊 Chart',
+      value: `[View on TradingView](${chartUrl})`,
+      inline: true
+    });
+
+    // Set footer with time
+    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
+
+    return embed;
+  }
+
+  // Format trade recommendation for embed field
+  formatRecommendationField(rec) {
+    const lines = [];
+
+    // Fire alert header for high confidence
+    if (rec.confidenceScore >= 90) {
+      lines.push('🔥🔥🔥 **FIRE ALERT - ENTER NOW** 🔥🔥🔥');
+    } else if (rec.confidenceScore >= 80) {
+      lines.push('🔥 **STRONG ENTRY SIGNAL** 🔥');
+    }
+
+    // Action and confidence
+    lines.push(`**${rec.recommendation.shortAction || rec.recommendation.action}** | Confidence: **${rec.confidenceScore}/100**`);
+
+    // Option suggestion with contracts
+    if (rec.optionSuggestion) {
+      lines.push(`📋 **Trade:** ${rec.optionSuggestion.fullDescription || rec.optionSuggestion.description}`);
+    }
+
+    // Targets with partial
+    lines.push(`🎯 Entry: $${rec.targets.entry.toFixed(2)}`);
+    if (rec.targets.partialTarget) {
+      lines.push(`   Partial (50%): $${rec.targets.partialTarget.toFixed(2)} | Full: $${rec.targets.target.toFixed(2)}`);
+    } else {
+      lines.push(`   Target: $${rec.targets.target.toFixed(2)}`);
+    }
+    lines.push(`   Stop: $${rec.targets.stopLoss.toFixed(2)} | R:R **${rec.targets.riskReward}:1**`);
+
+    // Expected P&L if available
+    if (rec.optionPnL) {
+      lines.push(`💰 **If target hit:** +$${rec.optionPnL.maxProfitDollars} (${rec.optionPnL.expectedOptionGain})`);
+      lines.push(`   **If stopped:** -$${rec.optionPnL.maxLossDollars} (${rec.optionPnL.expectedOptionLoss})`);
+    }
+
+    // Supporting factors (short form)
+    if (rec.factors && rec.factors.length > 0) {
+      lines.push(`✅ ${rec.factors.slice(0, 3).join(' | ')}`);
+    }
+
+    // Warnings (short form)
+    if (rec.warnings && rec.warnings.length > 0) {
+      lines.push(`⚠️ ${rec.warnings.slice(0, 2).join(' | ')}`);
+    }
+
+    // Urgency timing
+    if (rec.urgency) {
+      lines.push(`⏰ **${rec.urgency}**`);
+    }
+
+    // Bot's opinion
+    lines.push(`*${rec.recommendation.message}*`);
+
+    return lines.join('\n');
+  }
+
+  // Format paper trade recap embed
+  formatPaperRecap(summary) {
+    if (!summary || summary.total_trades === 0) {
+      const embed = new EmbedBuilder()
+        .setTitle('📊 Paper Trading Daily Recap')
+        .setColor(0x808080)
+        .setDescription('No paper trades today.')
+        .setTimestamp();
+      return embed;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Paper Trading Daily Recap')
+      .setColor(summary.total_pnl_dollars >= 0 ? 0x00FF00 : 0xFF0000)
+      .setTimestamp();
+
+    // Overall stats
+    const closedCount = (summary.winners || 0) + (summary.losers || 0);
+
+    embed.addFields({
+      name: '📈 Performance',
+      value: [
+        `Total Trades: **${summary.total_trades}** (${summary.open_trades || 0} still open)`,
+        `Win Rate: **${summary.winRate}%** (${summary.winners}W / ${summary.losers}L)`,
+        `Avg P&L: **${(summary.avg_pnl_percent || 0).toFixed(2)}%**`,
+        `Total P&L: **$${(summary.total_pnl_dollars || 0).toFixed(2)}** (based on $1000/trade)`
+      ].join('\n'),
+      inline: false
+    });
+
+    // Exit stats
+    embed.addFields({
+      name: '🎯 Trade Exits',
+      value: `Targets Hit: **${summary.targets_hit || 0}** | Stops Hit: **${summary.stops_hit || 0}**`,
+      inline: true
+    });
+
+    embed.addFields({
+      name: '📊 Avg Confidence',
+      value: `**${(summary.avg_confidence || 0).toFixed(0)}/100**`,
+      inline: true
+    });
+
+    // By confidence level
+    if (summary.byConfidence && summary.byConfidence.length > 0) {
+      const confText = summary.byConfidence.map(conf => {
+        const winRate = conf.count > 0 ? ((conf.winners / conf.count) * 100).toFixed(0) : 0;
+        return `${conf.confidence_level}: ${conf.count} trades, ${winRate}% win, ${(conf.avg_pnl || 0).toFixed(2)}% avg`;
+      }).join('\n');
+
+      embed.addFields({
+        name: '🎚️ By Confidence Level',
+        value: confText,
+        inline: false
+      });
+    }
+
+    // Best/worst trades
+    if (summary.bestTrade || summary.worstTrade) {
+      const tradeText = [];
+      if (summary.bestTrade) {
+        tradeText.push(`🏆 Best: **${summary.bestTrade.ticker}** +${(summary.bestTrade.pnl_percent || 0).toFixed(2)}%`);
+      }
+      if (summary.worstTrade) {
+        tradeText.push(`📉 Worst: **${summary.worstTrade.ticker}** ${(summary.worstTrade.pnl_percent || 0).toFixed(2)}%`);
+      }
+      embed.addFields({
+        name: '🏅 Notable Trades',
+        value: tradeText.join('\n'),
+        inline: false
+      });
+    }
+
+    // Insight
+    let insight = '';
+    if (parseFloat(summary.winRate) >= 60) {
+      insight = '✅ Strong day! The recommendation system is working well.';
+    } else if (parseFloat(summary.winRate) >= 50) {
+      insight = '📊 Decent performance. Continue monitoring signal quality.';
+    } else if (closedCount > 0) {
+      insight = '⚠️ Challenging day. Consider reviewing which factors led to losses.';
+    }
+
+    if (insight) {
+      embed.addFields({
+        name: '💡 Insight',
+        value: insight,
+        inline: false
+      });
+    }
+
     embed.setFooter({ text: `Market Close - ${marketHours.formatTimeET()} ET` });
+    return embed;
+  }
+
+  // Format active paper trades
+  formatActivePaperTrades(trades) {
+    if (!trades || trades.length === 0) {
+      return '📋 No active paper trades.';
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`📈 Active Paper Trades (${trades.length})`)
+      .setColor(0x3498DB)
+      .setTimestamp();
+
+    let description = '';
+    for (const trade of trades.slice(0, 10)) {
+      const emoji = trade.direction === 'BULLISH' ? '🟢' : '🔴';
+      description += `${emoji} **${trade.ticker}** ${trade.direction}\n`;
+      description += `Entry: $${trade.entry_price.toFixed(2)} | Target: $${trade.target_price.toFixed(2)} | Stop: $${trade.stop_price.toFixed(2)}\n`;
+      if (trade.option_type) {
+        description += `Option: ${trade.option_strike} ${trade.option_type}\n`;
+      }
+      description += `Confidence: ${trade.confidence_score}/100\n\n`;
+    }
+
+    embed.setDescription(description);
+    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
     return embed;
   }
 
@@ -679,7 +1042,8 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       'vwap_cross': '📈',
       'new_high': '🏔️',
       'new_low': '🕳️',
-      'relative_strength': '💪'
+      'relative_strength': '💪',
+      'level_break': '📏'
     };
     return emojis[type] || '📊';
   }
@@ -696,7 +1060,8 @@ ${heatResult.description ? `**Details:** ${heatResult.description}\n` : ''}
       'vwap_cross': 'VWAP Cross',
       'new_high': 'New High',
       'new_low': 'New Low',
-      'relative_strength': 'Relative Strength'
+      'relative_strength': 'Relative Strength',
+      'level_break': 'Level Break'
     };
     return names[type] || type;
   }

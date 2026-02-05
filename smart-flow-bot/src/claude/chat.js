@@ -19,14 +19,14 @@ class ClaudeChat {
       }
     } catch (error) {
       // Try common paths
-      const paths = ['/usr/local/bin/claude', '/opt/homebrew/bin/claude', 'claude'];
-      for (const path of paths) {
+      const paths = ['/usr/local/bin/claude', '/opt/homebrew/bin/claude', '/Users/benjaminarp/.local/bin/claude'];
+      for (const testPath of paths) {
         try {
-          const test = await this.runCommand(path, ['--version']);
+          const test = await this.runCommand(testPath, ['--version']);
           if (test.success) {
-            this.claudePath = path;
+            this.claudePath = testPath;
             this.enabled = true;
-            logger.info(`Claude Code CLI found at ${path} - chat enabled`);
+            logger.info(`Claude Code CLI found at ${testPath} - chat enabled`);
             return true;
           }
         } catch (e) {
@@ -43,12 +43,12 @@ class ClaudeChat {
     return this.enabled;
   }
 
-  // Run a shell command and return output
+  // Run a command without shell (safer)
   runCommand(command, args) {
     return new Promise((resolve) => {
       const proc = spawn(command, args, {
-        env: { ...process.env },
-        shell: true
+        env: { ...process.env }
+        // No shell: true - this is safer
       });
 
       let stdout = '';
@@ -93,13 +93,9 @@ class ClaudeChat {
 
     try {
       // Build the prompt with trading context
-      let prompt = this.buildPrompt(message, context);
+      const prompt = this.buildPrompt(message, context);
 
-      // Use claude CLI with --print flag for non-interactive output
-      // Escape the prompt for shell
-      const escapedPrompt = prompt.replace(/'/g, "'\\''");
-
-      const result = await this.runClaudeCommand(escapedPrompt);
+      const result = await this.runClaudeCommand(prompt);
 
       if (result.success) {
         return {
@@ -122,17 +118,20 @@ class ClaudeChat {
     }
   }
 
-  // Run claude command with timeout
+  // Run claude command with timeout (no shell)
   runClaudeCommand(prompt) {
     return new Promise((resolve) => {
-      const timeout = 60000; // 60 second timeout
+      const timeout = 120000; // 120 second timeout (Claude can be slow)
 
-      // Use claude with -p (print) flag for single response
-      const proc = spawn(this.claudePath || 'claude', ['-p', prompt], {
-        env: { ...process.env },
-        shell: true,
-        timeout
+      // Use claude with --print flag and pipe prompt via stdin
+      const proc = spawn(this.claudePath, ['--print'], {
+        env: { ...process.env, HOME: process.env.HOME || '/Users/benjaminarp' },
+        stdio: ['pipe', 'pipe', 'pipe']
       });
+
+      // Write prompt to stdin and close it
+      proc.stdin.write(prompt);
+      proc.stdin.end();
 
       let stdout = '';
       let stderr = '';
@@ -145,7 +144,7 @@ class ClaudeChat {
           resolve({
             success: false,
             output: '',
-            error: 'Request timed out after 60 seconds'
+            error: 'Request timed out after 120 seconds. Claude CLI may be busy or not authenticated. Try: claude /login'
           });
         }
       }, timeout);
@@ -186,29 +185,39 @@ class ClaudeChat {
 
   // Build prompt with trading context
   buildPrompt(message, context = {}) {
-    let prompt = `You are a trading assistant in a Discord server. Keep responses concise (under 1800 characters for Discord).
+    // Keep prompt simple and short for faster response
+    return `Trading assistant - keep response under 1500 chars. Question: ${message}`;
+  }
 
-Guidelines:
-- Help with trading concepts, market mechanics, and signal interpretation
-- Never give specific buy/sell advice or price targets
-- Always remind users that trading involves risk
-- Be educational and clear`;
+  // Analyze a stock alert - used for AI-powered alert analysis
+  async analyzeAlert(ticker, signalType, price, rvol, changePercent) {
+    if (!this.enabled) return null;
 
-    // Add market context if available
-    if (context.marketStatus) {
-      prompt += `\n\nCurrent market status: ${context.marketStatus}`;
+    const prompt = `Quick trading analysis in under 400 chars. ${ticker} just triggered a ${signalType} signal at $${price}. ${rvol ? `RVOL: ${rvol}x.` : ''} ${changePercent ? `Change: ${changePercent}%.` : ''} What might be driving this move? Key levels to watch? Risk factors?`;
+
+    const result = await this.runClaudeCommand(prompt);
+    if (result.success && result.output) {
+      return result.output.trim().substring(0, 500);
+    }
+    return null;
+  }
+
+  // Generate trade idea/thesis for a ticker
+  async generateTradeIdea(ticker, currentPrice, signals = []) {
+    if (!this.enabled) return null;
+
+    let signalContext = '';
+    if (signals.length > 0) {
+      signalContext = `Recent signals: ${signals.map(s => s.signal_type).join(', ')}.`;
     }
 
-    if (context.recentAlerts && context.recentAlerts.length > 0) {
-      prompt += `\n\nRecent scanner alerts:`;
-      context.recentAlerts.slice(0, 3).forEach(alert => {
-        prompt += `\n- ${alert.ticker}: ${alert.signal_type} (Heat: ${alert.heat_score})`;
-      });
+    const prompt = `Generate a concise trade thesis for ${ticker} at $${currentPrice}. ${signalContext} Include: 1) Bull case 2) Bear case 3) Key levels 4) Risk/reward. Keep under 1200 chars. Be specific with price levels.`;
+
+    const result = await this.runClaudeCommand(prompt);
+    if (result.success && result.output) {
+      return result.output.trim();
     }
-
-    prompt += `\n\nUser question: ${message}`;
-
-    return prompt;
+    return null;
   }
 
   // Quick question (same as chat for CLI version)

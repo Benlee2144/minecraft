@@ -111,6 +111,87 @@ class MarketHours {
     return minutesSinceOpen >= 0 && minutesSinceOpen <= windowMinutes;
   }
 
+  // Get current trading session phase
+  getTradingPhase() {
+    if (!this.isMarketOpen()) {
+      return { phase: 'closed', label: 'Market Closed', emoji: '🌙' };
+    }
+
+    const minutesSinceOpen = this.getMinutesSinceOpen();
+    const minutesUntilClose = Math.floor(this.getTimeUntilClose() / 60000);
+
+    // Opening Drive: 9:30-10:00 (first 30 min)
+    if (minutesSinceOpen <= 30) {
+      return {
+        phase: 'opening_drive',
+        label: 'Opening Drive',
+        emoji: '🔥',
+        description: 'High volatility - best for momentum plays',
+        heatBonus: 15
+      };
+    }
+
+    // Morning Session: 10:00-11:30
+    if (minutesSinceOpen <= 120) {
+      return {
+        phase: 'morning',
+        label: 'Morning Session',
+        emoji: '☀️',
+        description: 'Trend establishment',
+        heatBonus: 5
+      };
+    }
+
+    // Lunch/Chop: 11:30-2:00
+    if (minutesSinceOpen <= 270) {
+      return {
+        phase: 'midday',
+        label: 'Midday Chop',
+        emoji: '😴',
+        description: 'Low volume - higher false signal risk',
+        heatBonus: -10
+      };
+    }
+
+    // Afternoon: 2:00-3:00
+    if (minutesSinceOpen <= 330) {
+      return {
+        phase: 'afternoon',
+        label: 'Afternoon',
+        emoji: '📈',
+        description: 'Trend resumption',
+        heatBonus: 5
+      };
+    }
+
+    // Power Hour: 3:00-4:00 (last 60 min)
+    return {
+      phase: 'power_hour',
+      label: 'Power Hour',
+      emoji: '⚡',
+      description: 'High volume - institutional activity',
+      heatBonus: 20
+    };
+  }
+
+  // Check if in power hour (last 60 min)
+  isPowerHour() {
+    const phase = this.getTradingPhase();
+    return phase.phase === 'power_hour';
+  }
+
+  // Check if in opening drive (first 30 min)
+  isOpeningDrive() {
+    const phase = this.getTradingPhase();
+    return phase.phase === 'opening_drive';
+  }
+
+  // Get heat bonus based on time of day
+  getTimeHeatBonus() {
+    const phase = this.getTradingPhase();
+    return phase.heatBonus || 0;
+  }
+
   // Format time for display (Eastern)
   formatTimeET() {
     const eastern = this.getEasternTime();
