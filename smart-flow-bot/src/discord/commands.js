@@ -87,6 +87,22 @@ class DiscordCommands {
       .setName('clear')
       .setDescription('Clear your conversation history with Claude');
 
+    // /idea command (AI trade thesis)
+    const ideaCommand = new SlashCommandBuilder()
+      .setName('idea')
+      .setDescription('Get AI-generated trade thesis for a ticker')
+      .addStringOption(option =>
+        option
+          .setName('ticker')
+          .setDescription('The ticker symbol to analyze')
+          .setRequired(true)
+      );
+
+    // /perf command (performance stats)
+    const perfCommand = new SlashCommandBuilder()
+      .setName('perf')
+      .setDescription('Show alert performance statistics and win rates');
+
     this.commands = [
       watchlistCommand,
       flowCommand,
@@ -94,7 +110,9 @@ class DiscordCommands {
       statsCommand,
       statusCommand,
       askCommand,
-      clearCommand
+      clearCommand,
+      ideaCommand,
+      perfCommand
     ];
   }
 
@@ -154,6 +172,12 @@ class DiscordCommands {
           break;
         case 'clear':
           await this.handleClear(interaction);
+          break;
+        case 'idea':
+          await this.handleIdea(interaction);
+          break;
+        case 'perf':
+          await this.handlePerf(interaction);
           break;
         default:
           await interaction.reply({ content: 'Unknown command', ephemeral: true });
@@ -333,6 +357,128 @@ class DiscordCommands {
       content: 'Your conversation history with Claude has been cleared.',
       ephemeral: true
     });
+  }
+
+  // Handle /idea command (AI trade thesis)
+  async handleIdea(interaction) {
+    if (!claudeChat.isEnabled()) {
+      await interaction.reply({
+        content: 'Claude CLI not available for trade ideas.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferReply();
+
+    const ticker = interaction.options.getString('ticker').toUpperCase();
+
+    try {
+      // Get recent signals for this ticker
+      const flowSummary = database.getFlowSummary(ticker);
+      const currentPrice = flowSummary.price;
+
+      // Generate trade idea
+      const idea = await claudeChat.generateTradeIdea(
+        ticker,
+        currentPrice || 'unknown',
+        flowSummary.recentSignals || []
+      );
+
+      if (idea) {
+        const { EmbedBuilder } = require('discord.js');
+        const embed = new EmbedBuilder()
+          .setTitle(`💡 Trade Idea: ${ticker}`)
+          .setColor(0x9B59B6)
+          .setDescription(idea)
+          .addFields({
+            name: '📊 Chart',
+            value: `[View on TradingView](https://www.tradingview.com/chart/?symbol=${ticker})`,
+            inline: true
+          })
+          .setFooter({ text: 'AI-generated thesis - not financial advice' })
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+      } else {
+        await interaction.editReply('Could not generate trade idea. Try again later.');
+      }
+    } catch (error) {
+      logger.error('Error handling /idea command', { error: error.message });
+      await interaction.editReply('Error generating trade idea.');
+    }
+  }
+
+  // Handle /perf command (performance stats)
+  async handlePerf(interaction) {
+    await interaction.deferReply();
+
+    try {
+      const stats = database.getPerformanceStats();
+      const { EmbedBuilder } = require('discord.js');
+
+      const embed = new EmbedBuilder()
+        .setTitle('📊 Alert Performance Stats')
+        .setColor(0x3498DB)
+        .setTimestamp();
+
+      // Overall stats
+      const totalTracked = stats.total_alerts || 0;
+      const winRate15 = totalTracked > 0
+        ? ((stats.winners_15min / totalTracked) * 100).toFixed(1)
+        : 'N/A';
+      const winRate1hr = totalTracked > 0
+        ? ((stats.winners_1hr / totalTracked) * 100).toFixed(1)
+        : 'N/A';
+
+      embed.addFields(
+        { name: 'Total Tracked', value: totalTracked.toString(), inline: true },
+        { name: '15min Win Rate', value: `${winRate15}%`, inline: true },
+        { name: '1hr Win Rate', value: `${winRate1hr}%`, inline: true }
+      );
+
+      // Average moves
+      embed.addFields(
+        { name: 'Avg 5min', value: `${(stats.avg_5min || 0).toFixed(2)}%`, inline: true },
+        { name: 'Avg 15min', value: `${(stats.avg_15min || 0).toFixed(2)}%`, inline: true },
+        { name: 'Avg 1hr', value: `${(stats.avg_1hr || 0).toFixed(2)}%`, inline: true }
+      );
+
+      // By signal type
+      if (stats.bySignalType && stats.bySignalType.length > 0) {
+        const signalText = stats.bySignalType.slice(0, 5).map(s => {
+          const wr = s.total > 0 ? ((s.winners / s.total) * 100).toFixed(0) : 0;
+          return `• ${formatters.formatSignalType(s.signal_type)}: ${wr}% win (${s.total} alerts)`;
+        }).join('\n');
+
+        embed.addFields({
+          name: 'Performance by Signal Type',
+          value: signalText || 'No data yet',
+          inline: false
+        });
+      }
+
+      // By heat score
+      if (stats.byHeatScore && stats.byHeatScore.length > 0) {
+        const heatText = stats.byHeatScore.map(h => {
+          const wr = h.total > 0 ? ((h.winners / h.total) * 100).toFixed(0) : 0;
+          return `• ${h.heat_range}: ${wr}% win (${h.total} alerts)`;
+        }).join('\n');
+
+        embed.addFields({
+          name: 'Performance by Heat Score',
+          value: heatText || 'No data yet',
+          inline: false
+        });
+      }
+
+      embed.setFooter({ text: 'Performance tracking requires market hours data' });
+
+      await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+      logger.error('Error handling /perf command', { error: error.message });
+      await interaction.editReply('Error fetching performance stats.');
+    }
   }
 }
 

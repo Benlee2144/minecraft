@@ -4,7 +4,7 @@ const marketHours = require('../utils/marketHours');
 class DiscordFormatters {
 
   // Format a stock alert for Discord
-  formatStockAlert(heatResult) {
+  formatStockAlert(heatResult, options = {}) {
     const isHighConviction = heatResult.heatScore >= 80;
     const emoji = this.getSignalEmoji(heatResult.signalType);
     const title = isHighConviction
@@ -57,8 +57,34 @@ class DiscordFormatters {
       inline: false
     });
 
+    // AI Analysis (if provided)
+    if (options.aiAnalysis) {
+      embed.addFields({
+        name: '🤖 AI Analysis',
+        value: options.aiAnalysis.substring(0, 1000),
+        inline: false
+      });
+    }
+
+    // Earnings warning (if near earnings)
+    if (options.earningsWarning) {
+      embed.addFields({
+        name: '⚠️ Earnings Alert',
+        value: options.earningsWarning,
+        inline: false
+      });
+    }
+
+    // TradingView chart link
+    const chartUrl = `https://www.tradingview.com/chart/?symbol=${heatResult.ticker}`;
+    embed.addFields({
+      name: '📊 Chart',
+      value: `[View on TradingView](${chartUrl})`,
+      inline: true
+    });
+
     // Time
-    embed.setFooter({ text: `${marketHours.formatTimeET()} ET` });
+    embed.setFooter({ text: `${marketHours.formatTimeET()} ET | Alert ID: ${options.alertId || 'N/A'}` });
 
     return embed;
   }
