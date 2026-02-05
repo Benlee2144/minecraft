@@ -17,6 +17,7 @@ class DiscordBot {
       paperTrades: null,    // Paper trade activity
       dailyRecap: null,     // End of day summaries
       claudeChat: null,     // Claude AI responses
+      preMarket: null,      // Pre-market scanner (9:00-9:30 AM)
       // Legacy (mapped to new)
       highConviction: null,
       flowAlerts: null,
@@ -122,6 +123,11 @@ class DiscordBot {
       if (config.discord.channels.claudeChat) {
         this.channels.claudeChat = await this.client.channels.fetch(config.discord.channels.claudeChat);
         logger.info('Cached claude-chat channel');
+      }
+
+      if (config.discord.channels.preMarket) {
+        this.channels.preMarket = await this.client.channels.fetch(config.discord.channels.preMarket);
+        logger.info('Cached pre-market channel');
       }
 
       logger.info('All channels cached successfully');
@@ -385,7 +391,9 @@ class DiscordBot {
       'daily-recap': this.channels.dailyRecap,
       'botStatus': this.channels.dailyRecap,    // Legacy
       'claudeChat': this.channels.claudeChat,
-      'claude-chat': this.channels.claudeChat
+      'claude-chat': this.channels.claudeChat,
+      'preMarket': this.channels.preMarket,
+      'pre-market': this.channels.preMarket
     };
 
     const channel = channelMap[channelName];
@@ -411,6 +419,11 @@ class DiscordBot {
   // Send paper trade notification
   async sendPaperTradeNotification(message, isClose = false) {
     await this.sendMessage('paperTrades', message);
+  }
+
+  // Send embed to a channel (convenience method)
+  async sendEmbed(channelName, embed) {
+    await this.sendMessage(channelName, { embeds: [embed] });
   }
 
   // Send daily recap
@@ -582,6 +595,36 @@ class DiscordBot {
       try {
         await this.channels.claudeChat.send({ embeds: [claudeEmbed] });
       } catch (e) { logger.error('Failed to send claude-chat welcome', { error: e.message }); }
+    }
+
+    // Pre-Market Channel
+    if (this.channels.preMarket) {
+      const preMarketEmbed = new EmbedBuilder()
+        .setTitle('🌅 Welcome to Pre-Market')
+        .setColor(0xFFA500)
+        .setDescription('**Early bird alerts before the market opens.**')
+        .addFields(
+          {
+            name: 'What Posts Here',
+            value: '- Gap alerts (stocks gapping up/down from previous close)\n- Pre-market volume leaders\n- Key levels to watch at open\n- Potential opening drive plays\n- VIX status and market sentiment',
+            inline: false
+          },
+          {
+            name: 'When It Runs',
+            value: '**9:00 AM - 9:30 AM ET** (30 min before market open)\nThis gives you time to prepare your watchlist.',
+            inline: false
+          },
+          {
+            name: 'How to Use',
+            value: '- Review gap alerts for potential fade or follow plays\n- Note which tickers have unusual pre-market volume\n- Set your levels before the opening bell\n- Be ready for Opening Drive (9:30-10:00 AM)',
+            inline: false
+          }
+        )
+        .setFooter({ text: 'Smart Flow Scanner | Pre-Market' });
+
+      try {
+        await this.channels.preMarket.send({ embeds: [preMarketEmbed] });
+      } catch (e) { logger.error('Failed to send pre-market welcome', { error: e.message }); }
     }
 
     this.welcomesSent = true;

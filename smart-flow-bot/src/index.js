@@ -13,6 +13,14 @@ const spyCorrelation = require('./detection/spyCorrelation');
 const sectorHeatMap = require('./detection/sectorHeatMap');
 const tradeRecommendation = require('./detection/tradeRecommendation');
 
+// Advanced Detection modules (Elite features)
+const preMarketScanner = require('./detection/preMarketScanner');
+const exitSignals = require('./detection/exitSignals');
+const squeezeDetection = require('./detection/squeezeDetection');
+const patternRecognition = require('./detection/patternRecognition');
+const vixMonitor = require('./detection/vixMonitor');
+const afterHoursScanner = require('./detection/afterHoursScanner');
+
 // Data modules
 const earningsCalendar = require('./utils/earnings');
 const paperTrading = require('./utils/paperTrading');
@@ -34,6 +42,11 @@ class SmartStockScanner {
     this.alertCooldownMs = 60000; // 60 second cooldown per ticker (polling is slower)
     this.pollIntervalMs = 30000; // Poll every 30 seconds
     this.sectorUpdateIntervalMs = 120000; // Update sectors every 2 minutes
+
+    // Elite feature intervals
+    this.preMarketInterval = null;
+    this.afterHoursInterval = null;
+    this.vixUpdateInterval = null;
   }
 
   async start() {
@@ -86,6 +99,15 @@ class SmartStockScanner {
 
       // Start market hours check
       this.startMarketHoursCheck();
+
+      // Start pre-market scanner (9:00-9:30 AM)
+      this.startPreMarketScanner();
+
+      // Start after-hours scanner (4:00-8:00 PM)
+      this.startAfterHoursScanner();
+
+      // Start VIX monitoring
+      this.startVixMonitoring();
 
       this.isRunning = true;
 
@@ -232,6 +254,91 @@ class SmartStockScanner {
     }, this.sectorUpdateIntervalMs);
   }
 
+  // Start pre-market scanner (9:00-9:30 AM ET)
+  startPreMarketScanner() {
+    logger.info('Pre-market scanner initialized (9:00-9:30 AM ET)');
+
+    // Check every minute during pre-market window
+    this.preMarketInterval = setInterval(async () => {
+      if (preMarketScanner.isPreMarketTime()) {
+        try {
+          const results = await preMarketScanner.scan();
+          if (results && results.gaps.length > 0) {
+            // Send gap alerts to pre-market channel
+            const gapEmbed = preMarketScanner.formatGapAlerts();
+            if (gapEmbed) {
+              await discordBot.sendEmbed('preMarket', gapEmbed);
+            }
+
+            // Send volume leaders
+            const volumeEmbed = preMarketScanner.formatVolumeLeaders();
+            if (volumeEmbed) {
+              await discordBot.sendEmbed('preMarket', volumeEmbed);
+            }
+          }
+        } catch (error) {
+          logger.error('Pre-market scan error', { error: error.message });
+        }
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+  }
+
+  // Start after-hours scanner (4:00-8:00 PM ET)
+  startAfterHoursScanner() {
+    logger.info('After-hours scanner initialized (4:00-8:00 PM ET)');
+
+    // Check every 10 minutes during after-hours
+    this.afterHoursInterval = setInterval(async () => {
+      if (afterHoursScanner.isAfterHoursTime()) {
+        try {
+          const results = await afterHoursScanner.scan();
+          if (results && results.movers.length > 0) {
+            const embed = afterHoursScanner.formatAfterHoursAlerts();
+            if (embed) {
+              await discordBot.sendEmbed('preMarket', embed); // Use pre-market channel for AH too
+            }
+
+            // Send next-day setups at end of after-hours
+            const now = new Date();
+            const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+            if (et.getHours() === 19 && et.getMinutes() >= 50) { // Near 8 PM
+              const setupsEmbed = afterHoursScanner.formatNextDaySetups();
+              if (setupsEmbed) {
+                await discordBot.sendEmbed('preMarket', setupsEmbed);
+              }
+            }
+          }
+        } catch (error) {
+          logger.error('After-hours scan error', { error: error.message });
+        }
+      }
+    }, 10 * 60 * 1000); // Every 10 minutes
+  }
+
+  // Start VIX monitoring
+  startVixMonitoring() {
+    logger.info('VIX monitoring initialized');
+
+    // Update VIX every 5 minutes during market hours
+    this.vixUpdateInterval = setInterval(async () => {
+      if (marketHours.isMarketOpen() || preMarketScanner.isPreMarketTime()) {
+        try {
+          await vixMonitor.updateVix();
+
+          // Check for significant level changes
+          const levelChange = vixMonitor.checkForLevelChange();
+          if (levelChange) {
+            const embed = vixMonitor.formatVixAlert(levelChange);
+            await discordBot.sendEmbed('flowScanner', embed);
+            logger.info(`VIX level change: ${levelChange.from} -> ${levelChange.to}`);
+          }
+        } catch (error) {
+          logger.error('VIX update error', { error: error.message });
+        }
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+  }
+
   async stopMonitoring() {
     this.isMonitoring = false;
 
@@ -246,6 +353,16 @@ class SmartStockScanner {
       clearInterval(this.sectorUpdateInterval);
       this.sectorUpdateInterval = null;
     }
+
+    // Store closing prices for after-hours scanner
+    logger.info('Storing closing prices for after-hours scanner...');
+    const closingPrices = {};
+    for (const [ticker, snapshot] of this.lastSnapshots) {
+      if (snapshot.price) {
+        closingPrices[ticker] = snapshot.price;
+      }
+    }
+    afterHoursScanner.storeClosingPrices(closingPrices);
 
     // Close all open paper trades at market close
     logger.info('Closing all open paper trades at market close...');
@@ -339,6 +456,9 @@ class SmartStockScanner {
 
       // Check paper trades against current prices
       await this.checkPaperTrades();
+
+      // Run advanced pattern detection on hot tickers
+      await this.runAdvancedDetection();
 
       logger.debug('Polling cycle complete');
 
@@ -702,11 +822,32 @@ class SmartStockScanner {
     const activeTrades = paperTrading.getActiveTrades();
     if (activeTrades.length === 0) return;
 
-    // Build price map from our snapshots
+    // Build price map and volume map from our snapshots
     const prices = {};
+    const volumes = {};
     for (const [ticker, snapshot] of this.lastSnapshots) {
       if (snapshot.price) {
         prices[ticker] = snapshot.price;
+        volumes[ticker] = snapshot.todayVolume || 0;
+      }
+    }
+
+    // Check for exit signals on active trades
+    for (const trade of activeTrades) {
+      const currentPrice = prices[trade.ticker];
+      const currentVolume = volumes[trade.ticker];
+
+      if (currentPrice && currentVolume) {
+        const signals = exitSignals.checkExitSignals(trade, currentPrice, currentVolume);
+
+        // Send exit signal alerts to paper-trades channel
+        for (const signal of signals) {
+          if (signal.severity === 'warning' || signal.severity === 'positive') {
+            const message = exitSignals.formatExitSignal(trade, signal);
+            await discordBot.sendMessage('paperTrades', message);
+            logger.info(`Exit signal: ${trade.ticker} - ${signal.type}`);
+          }
+        }
       }
     }
 
@@ -748,11 +889,67 @@ class SmartStockScanner {
     }
   }
 
+  // Run advanced detection (squeeze, patterns) on tracked tickers
+  async runAdvancedDetection() {
+    try {
+      // Run on tickers that have had recent activity
+      for (const [ticker, snapshot] of this.lastSnapshots) {
+        if (!snapshot.price || !snapshot.high || !snapshot.low) continue;
+
+        // Update squeeze detection history
+        squeezeDetection.updatePriceHistory(
+          ticker,
+          snapshot.high,
+          snapshot.low,
+          snapshot.price,
+          snapshot.todayVolume || 0
+        );
+
+        // Update pattern recognition history
+        patternRecognition.updatePriceHistory(
+          ticker,
+          snapshot.high,
+          snapshot.low,
+          snapshot.price,
+          snapshot.todayVolume || 0,
+          snapshot.vwap
+        );
+
+        // Check for squeeze
+        const squeeze = squeezeDetection.detectSqueeze(ticker);
+        if (squeeze && squeeze.squeezeScore >= 75) {
+          const message = squeezeDetection.formatSqueezeAlert(squeeze);
+          await discordBot.sendMessage('flowScanner', message);
+          logger.info(`Squeeze detected: ${ticker} (score: ${squeeze.squeezeScore})`);
+        }
+
+        // Check for patterns
+        const patterns = patternRecognition.detectPatterns(
+          ticker,
+          snapshot.price,
+          snapshot.todayVolume || 0
+        );
+
+        for (const pattern of patterns) {
+          if (pattern.confidence >= 70) {
+            const message = patternRecognition.formatPatternAlert(pattern);
+            await discordBot.sendMessage('flowScanner', message);
+            logger.info(`Pattern detected: ${ticker} - ${pattern.type}`);
+          }
+        }
+      }
+    } catch (error) {
+      logger.error('Advanced detection error', { error: error.message });
+    }
+  }
+
   getStatus() {
     const phase = marketHours.getTradingPhase();
     const spyData = spyCorrelation.getSPYContext();
     const activePaperTrades = paperTrading.getActiveTrades();
     const todayPaperCount = paperTrading.getTodayTradeCount();
+    const riskStatus = paperTrading.getRiskStatus();
+    const vixLevel = vixMonitor.getVixLevel();
 
     return {
       polygonConnected: true, // REST API is stateless
@@ -774,6 +971,17 @@ class SmartStockScanner {
         active: activePaperTrades.length,
         todayTotal: todayPaperCount
       },
+      riskStatus: {
+        dailyPnL: riskStatus.dailyPnL,
+        tradingPaused: riskStatus.tradingPaused,
+        pauseReason: riskStatus.pauseReason,
+        consecutiveLosses: riskStatus.consecutiveLosses
+      },
+      vix: vixLevel ? {
+        value: vixLevel.value,
+        level: vixLevel.level,
+        emoji: vixLevel.emoji
+      } : null,
       marketStatus: {
         phase: phase.phase,
         description: phase.description,
@@ -801,6 +1009,19 @@ class SmartStockScanner {
 
     if (this.sectorUpdateInterval) {
       clearInterval(this.sectorUpdateInterval);
+    }
+
+    // Clear elite feature intervals
+    if (this.preMarketInterval) {
+      clearInterval(this.preMarketInterval);
+    }
+
+    if (this.afterHoursInterval) {
+      clearInterval(this.afterHoursInterval);
+    }
+
+    if (this.vixUpdateInterval) {
+      clearInterval(this.vixUpdateInterval);
     }
 
     // Shutdown components

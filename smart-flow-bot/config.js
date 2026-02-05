@@ -23,6 +23,8 @@ module.exports = {
       dailyRecap: process.env.DAILY_RECAP_CHANNEL || '1468815629036556410',
       // Claude chat channel - Claude AI responses from /ask commands
       claudeChat: process.env.CLAUDE_CHAT_CHANNEL || '1468815689140928634',
+      // Pre-market channel - Gap alerts, pre-market movers (9:00-9:30 AM)
+      preMarket: process.env.PRE_MARKET_CHANNEL || '1468830284127539221',
       // Legacy mappings for backwards compatibility
       highConviction: process.env.HIGH_CONVICTION_CHANNEL || '1468815395719741625',
       flowAlerts: process.env.FLOW_ALERTS_CHANNEL || '1468815500200120492',

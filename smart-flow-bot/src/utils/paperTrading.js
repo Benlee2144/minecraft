@@ -25,6 +25,13 @@ class PaperTrading {
     this.PARTIAL_PROFIT_THRESHOLD = 0.6; // Alert when 60% of the way to partial target
     this.TARGET_PROXIMITY_THRESHOLD = 0.8; // Alert when 80% of the way to target
     this.STOP_PROXIMITY_THRESHOLD = 0.7; // Alert when 70% of the way to stop
+
+    // Max daily loss protection
+    this.MAX_DAILY_LOSS = 500; // Stop trading after losing $500 in a day
+    this.MAX_CONSECUTIVE_LOSSES = 3; // Stop after 3 consecutive losses
+    this.consecutiveLosses = 0;
+    this.dailyLossLimitHit = false;
+    this.dailyLossLimitMessage = null;
   }
 
   initialize() {
@@ -228,6 +235,9 @@ class PaperTrading {
         this.dayResults.losers++;
       }
       this.dayResults.totalPnL += pnlDollars;
+
+      // Update loss tracking for risk management
+      this.updateLossTracking(pnlDollars);
 
       logger.info(`Closed paper trade #${tradeId}: ${trade.ticker} ${exitReason} | Stock: ${stockPnlPercent > 0 ? '+' : ''}${stockPnlPercent.toFixed(2)}% | Option: ${optionPnlPercent > 0 ? '+' : ''}${optionPnlPercent.toFixed(0)}% | P&L: $${pnlDollars > 0 ? '+' : ''}${pnlDollars.toFixed(0)}`);
 
@@ -706,14 +716,73 @@ class PaperTrading {
     return lines.join('\n');
   }
 
-  // Check if should open trade
+  // Check if should open trade (includes risk management)
   shouldOpenTrade(ticker, direction) {
+    // Check for duplicate position
     for (const trade of this.activeTrades.values()) {
       if (trade.ticker === ticker && trade.direction === direction) {
         return false;
       }
     }
+
+    // Check daily loss limit
+    if (this.isDailyLossLimitHit()) {
+      return false;
+    }
+
+    // Check consecutive losses
+    if (this.consecutiveLosses >= this.MAX_CONSECUTIVE_LOSSES) {
+      logger.warn(`Consecutive loss limit hit (${this.consecutiveLosses} losses) - pausing new trades`);
+      return false;
+    }
+
     return true;
+  }
+
+  // Check if daily loss limit has been hit
+  isDailyLossLimitHit() {
+    if (this.dailyLossLimitHit) {
+      return true;
+    }
+
+    // Calculate today's P&L
+    const todayPnL = this.dayResults.totalPnL;
+
+    if (todayPnL <= -this.MAX_DAILY_LOSS) {
+      this.dailyLossLimitHit = true;
+      this.dailyLossLimitMessage = `Daily loss limit hit: $${Math.abs(todayPnL).toFixed(0)} loss (limit: $${this.MAX_DAILY_LOSS})`;
+      logger.warn(this.dailyLossLimitMessage);
+      return true;
+    }
+
+    return false;
+  }
+
+  // Update loss tracking when a trade closes
+  updateLossTracking(pnlDollars) {
+    if (pnlDollars < 0) {
+      this.consecutiveLosses++;
+      logger.info(`Consecutive losses: ${this.consecutiveLosses}`);
+    } else if (pnlDollars > 0) {
+      this.consecutiveLosses = 0; // Reset on winner
+    }
+  }
+
+  // Get risk management status
+  getRiskStatus() {
+    return {
+      dailyPnL: this.dayResults.totalPnL,
+      maxDailyLoss: this.MAX_DAILY_LOSS,
+      dailyLossLimitHit: this.dailyLossLimitHit,
+      consecutiveLosses: this.consecutiveLosses,
+      maxConsecutiveLosses: this.MAX_CONSECUTIVE_LOSSES,
+      tradingPaused: this.dailyLossLimitHit || this.consecutiveLosses >= this.MAX_CONSECUTIVE_LOSSES,
+      pauseReason: this.dailyLossLimitHit
+        ? `Daily loss limit ($${this.MAX_DAILY_LOSS})`
+        : this.consecutiveLosses >= this.MAX_CONSECUTIVE_LOSSES
+          ? `${this.MAX_CONSECUTIVE_LOSSES} consecutive losses`
+          : null
+    };
   }
 
   getTodayTradeCount() {
@@ -737,6 +806,12 @@ class PaperTrading {
     };
     this.activeTrades.clear();
     this.loadActiveTrades();
+
+    // Reset risk management for new day
+    this.consecutiveLosses = 0;
+    this.dailyLossLimitHit = false;
+    this.dailyLossLimitMessage = null;
+    logger.info('Daily tracking and risk limits reset');
   }
 }
 
