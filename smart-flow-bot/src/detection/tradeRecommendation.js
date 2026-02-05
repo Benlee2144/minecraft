@@ -281,7 +281,7 @@ class TradeRecommendation {
 
     // ============ GENERATE RECOMMENDATION ============
     const recommendation = this.getRecommendation(confidenceScore, isBullish, warnings.length);
-    const optionSuggestion = this.suggestOption(price, isBullish, confidenceScore);
+    const optionSuggestion = this.suggestOption(ticker, price, isBullish, confidenceScore);
     const { target, stopLoss, partialTarget } = this.calculateTargets(price, isBullish, confidenceScore);
 
     // Calculate expected option P&L
@@ -391,7 +391,7 @@ class TradeRecommendation {
   // "Scalpers focus on liquid, near-the-money strikes with tight bid-ask spreads"
   // "If SPY is $425.50, trade $425 or $426 strikes for best volume and execution"
   // Source: https://www.quantvps.com/blog/0dte-spy-options
-  suggestOption(price, isBullish, confidence) {
+  suggestOption(ticker, price, isBullish, confidence) {
     // PRO STRATEGY: ATM or 1 strike OTM for scalps
     // - ATM has highest delta (faster moves)
     // - Tightest bid-ask spreads

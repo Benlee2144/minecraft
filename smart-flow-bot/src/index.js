@@ -721,27 +721,34 @@ class SmartStockScanner {
         logger.debug(`Trading phase: ${phase.label} (${phase.emoji}) - Heat bonus: ${phase.heatBonus > 0 ? '+' : ''}${phase.heatBonus}`);
       }
 
-      // Get gainers and losers (these are often the most interesting)
+      // ONLY scan the TOP 20 day trading tickers - nothing else allowed
+      // This ensures we focus on liquid, high-volume stocks with tight option spreads
+      const allowedTickers = new Set(config.topTickers);
+
+      // Get gainers/losers but ONLY process if they're in our top 20
       const [gainers, losers] = await Promise.all([
         polygonRest.getGainersLosers('gainers'),
         polygonRest.getGainersLosers('losers')
       ]);
 
-      // Process top gainers
-      for (const ticker of gainers.slice(0, 10)) {
-        await this.processSnapshot(ticker);
+      // Process gainers ONLY if they're in top 20
+      for (const tickerData of gainers.slice(0, 20)) {
+        const ticker = tickerData.ticker || tickerData;
+        if (allowedTickers.has(ticker)) {
+          await this.processSnapshot(tickerData);
+        }
       }
 
-      // Process top losers
-      for (const ticker of losers.slice(0, 10)) {
-        await this.processSnapshot(ticker);
+      // Process losers ONLY if they're in top 20
+      for (const tickerData of losers.slice(0, 20)) {
+        const ticker = tickerData.ticker || tickerData;
+        if (allowedTickers.has(ticker)) {
+          await this.processSnapshot(tickerData);
+        }
       }
 
-      // Also poll our specific watchlist tickers
-      const watchedTickers = discordBot.getAllWatchedTickers();
-      const tickersToCheck = [...new Set([...config.topTickers.slice(0, 20), ...watchedTickers])];
-
-      for (const ticker of tickersToCheck.slice(0, 30)) { // Limit to 30 to stay within rate limits
+      // Poll ALL top 20 tickers directly (this is our main focus)
+      for (const ticker of config.topTickers) {
         const snapshot = await polygonRest.getStockSnapshot(ticker);
         if (snapshot) {
           await this.processSnapshot(snapshot);
@@ -969,6 +976,13 @@ class SmartStockScanner {
 
   async evaluateSignal(signal) {
     const ticker = signal.ticker;
+
+    // STRICT FILTER: Only allow top 20 day trading tickers - NOTHING ELSE
+    const allowedTickers = new Set(config.topTickers);
+    if (!allowedTickers.has(ticker)) {
+      // Silently skip - we only care about the top 20
+      return;
+    }
 
     // Check cooldown
     const lastAlert = this.alertCooldowns.get(ticker) || 0;
