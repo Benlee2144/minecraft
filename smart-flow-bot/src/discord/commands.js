@@ -265,9 +265,10 @@ class DiscordCommands {
     const rest = new REST({ version: '10' }).setToken(config.discord.token);
 
     try {
-      logger.info('Registering slash commands...');
+      logger.info(`Registering slash commands... (${this.commands.length} commands in array)`);
 
       const commandData = this.commands.map(cmd => cmd.toJSON());
+      logger.info(`Command names: ${commandData.map(c => c.name).join(', ')}`);
 
       if (guildId) {
         // Register for specific guild (faster, for testing)
