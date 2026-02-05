@@ -73,7 +73,7 @@ class GreeksCalculator {
 
     for (let i = 0; i < this.maxIterations; i++) {
       const price = this.blackScholesPrice(S, K, T, r, sigma, isCall);
-      const vega = this.calculateVega(S, K, T, r, sigma);
+      const vega = this.calculateRawVega(S, K, T, r, sigma); // Use raw vega for Newton-Raphson
 
       if (Math.abs(vega) < 0.00001) {
         break; // Vega too small, stop iteration
@@ -135,12 +135,17 @@ class GreeksCalculator {
     }
   }
 
-  // Calculate Vega (per 1% move in IV)
-  calculateVega(S, K, T, r, sigma) {
+  // Calculate raw Vega (for Newton-Raphson)
+  calculateRawVega(S, K, T, r, sigma) {
     if (T <= 0) return 0;
 
     const { d1 } = this.calculateD1D2(S, K, T, r, sigma);
-    return S * Math.sqrt(T) * this.normalPDF(d1) / 100; // Per 1% IV change
+    return S * Math.sqrt(T) * this.normalPDF(d1);
+  }
+
+  // Calculate Vega (per 1% move in IV) - for display
+  calculateVega(S, K, T, r, sigma) {
+    return this.calculateRawVega(S, K, T, r, sigma) / 100;
   }
 
   // Calculate Rho
