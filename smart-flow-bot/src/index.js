@@ -276,7 +276,7 @@ class SmartStockScanner {
 
     // Send daily summary
     const stats = database.getTodayStats();
-    discordBot.sendDailySummary(stats);
+    await discordBot.sendDailySummary(stats);
 
     // Reset paper trading for next day
     paperTrading.resetDailyTracking();
