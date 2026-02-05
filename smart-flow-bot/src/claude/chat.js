@@ -19,14 +19,14 @@ class ClaudeChat {
       }
     } catch (error) {
       // Try common paths
-      const paths = ['/usr/local/bin/claude', '/opt/homebrew/bin/claude', 'claude'];
-      for (const path of paths) {
+      const paths = ['/usr/local/bin/claude', '/opt/homebrew/bin/claude', '/Users/benjaminarp/.local/bin/claude'];
+      for (const testPath of paths) {
         try {
-          const test = await this.runCommand(path, ['--version']);
+          const test = await this.runCommand(testPath, ['--version']);
           if (test.success) {
-            this.claudePath = path;
+            this.claudePath = testPath;
             this.enabled = true;
-            logger.info(`Claude Code CLI found at ${path} - chat enabled`);
+            logger.info(`Claude Code CLI found at ${testPath} - chat enabled`);
             return true;
           }
         } catch (e) {
@@ -43,12 +43,12 @@ class ClaudeChat {
     return this.enabled;
   }
 
-  // Run a shell command and return output
+  // Run a command without shell (safer)
   runCommand(command, args) {
     return new Promise((resolve) => {
       const proc = spawn(command, args, {
-        env: { ...process.env },
-        shell: true
+        env: { ...process.env }
+        // No shell: true - this is safer
       });
 
       let stdout = '';
@@ -93,13 +93,9 @@ class ClaudeChat {
 
     try {
       // Build the prompt with trading context
-      let prompt = this.buildPrompt(message, context);
+      const prompt = this.buildPrompt(message, context);
 
-      // Use claude CLI with --print flag for non-interactive output
-      // Escape the prompt for shell
-      const escapedPrompt = prompt.replace(/'/g, "'\\''");
-
-      const result = await this.runClaudeCommand(escapedPrompt);
+      const result = await this.runClaudeCommand(prompt);
 
       if (result.success) {
         return {
@@ -122,16 +118,16 @@ class ClaudeChat {
     }
   }
 
-  // Run claude command with timeout
+  // Run claude command with timeout (no shell)
   runClaudeCommand(prompt) {
     return new Promise((resolve) => {
       const timeout = 60000; // 60 second timeout
 
       // Use claude with -p (print) flag for single response
-      const proc = spawn(this.claudePath || 'claude', ['-p', prompt], {
-        env: { ...process.env },
-        shell: true,
-        timeout
+      // Pass prompt as argument directly - no shell escaping needed
+      const proc = spawn(this.claudePath, ['-p', prompt], {
+        env: { ...process.env }
+        // No shell: true - arguments are passed directly to the process
       });
 
       let stdout = '';
@@ -186,11 +182,11 @@ class ClaudeChat {
 
   // Build prompt with trading context
   buildPrompt(message, context = {}) {
-    let prompt = `You are a trading assistant in a Discord server. Keep responses concise (under 1800 characters for Discord).
+    let prompt = `You are a trading assistant in a Discord server. Keep responses concise under 1800 characters for Discord.
 
 Guidelines:
 - Help with trading concepts, market mechanics, and signal interpretation
-- Never give specific buy/sell advice or price targets
+- Never give specific buy or sell advice or price targets
 - Always remind users that trading involves risk
 - Be educational and clear`;
 
@@ -202,7 +198,7 @@ Guidelines:
     if (context.recentAlerts && context.recentAlerts.length > 0) {
       prompt += `\n\nRecent scanner alerts:`;
       context.recentAlerts.slice(0, 3).forEach(alert => {
-        prompt += `\n- ${alert.ticker}: ${alert.signal_type} (Heat: ${alert.heat_score})`;
+        prompt += `\n- ${alert.ticker}: ${alert.signal_type} Heat ${alert.heat_score}`;
       });
     }
 
