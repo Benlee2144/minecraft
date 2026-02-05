@@ -7,13 +7,13 @@ const keyLevels = require('./keyLevels');
 
 class TradeRecommendation {
   constructor() {
-    // Confidence thresholds - VERY AGGRESSIVE for day trading options
-    this.FIRE_ALERT = 80;      // 🔥🔥🔥 ENTER NOW
-    this.STRONG_BUY = 70;      // 🔥 STRONG ENTRY
-    this.BUY = 55;             // ✅ GOOD ENTRY
-    this.LEAN = 45;            // 🔸 LEAN ENTRY (still tradeable)
-    this.WATCH = 30;           // 👀 MONITOR ONLY
-    this.AVOID = 0;            // ⛔ DO NOT TRADE
+    // Confidence thresholds - MAXIMUM ACTION for day trading (15-30 trades/day)
+    this.FIRE_ALERT = 75;      // 🔥🔥🔥 ENTER NOW
+    this.STRONG_BUY = 65;      // 🔥 STRONG ENTRY
+    this.BUY = 50;             // ✅ GOOD ENTRY
+    this.LEAN = 35;            // 🔸 LEAN ENTRY (tradeable - matches alert threshold)
+    this.WATCH = 20;           // 👀 WATCH (still opens paper trade)
+    this.AVOID = 0;            // ⛔ DO NOT TRADE (only this is skipped)
 
     // Position sizing
     this.POSITION_SIZE = 2000; // $2000 per trade

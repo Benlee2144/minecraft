@@ -32,11 +32,11 @@ module.exports = {
     }
   },
 
-  // Heat Score Thresholds - AGGRESSIVE for day trading
+  // Heat Score Thresholds - VERY AGGRESSIVE for active day trading
   heatScore: {
-    highConvictionThreshold: 80,  // Post to #fire-alerts
-    alertThreshold: 45,            // Post to #flow-alerts (lowered for more action)
-    watchlistThreshold: 35         // Alert for watchlist tickers
+    highConvictionThreshold: 75,  // Post to #fire-alerts
+    alertThreshold: 35,            // Post to #flow-alerts (very low for max action)
+    watchlistThreshold: 25         // Alert for watchlist tickers
   },
 
   // Heat Score Points (Stock Scanner)

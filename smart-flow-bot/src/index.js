@@ -1095,13 +1095,13 @@ class SmartStockScanner {
       // Add recommendation to heat result for display
       heatResult.recommendation = recommendation;
 
-      // Open paper trade if recommendation is actionable (AGGRESSIVE for day trading)
-      // Day traders need action - open paper trades on signals that make the threshold
+      // Open paper trade if recommendation is actionable (MAXIMUM ACTION for day trading)
+      // Every signal that hits the alert threshold should open a paper trade
       logger.info(`Trade check: ${ticker} | Confidence: ${recommendation.confidenceScore} | Action: ${recommendation.recommendation.shortAction}`);
 
-      if (recommendation && recommendation.confidenceScore >= 50 &&
-          !recommendation.recommendation.shortAction.includes('AVOID') &&
-          !recommendation.recommendation.shortAction.includes('WATCH')) {
+      if (recommendation && recommendation.confidenceScore >= 35 &&
+          !recommendation.recommendation.shortAction.includes('AVOID')) {
+        // Note: We allow WATCH signals to trade - only skip AVOID
         // Check if we should open this trade
         const canOpen = paperTrading.shouldOpenTrade(ticker, recommendation.direction);
         logger.info(`Paper trade eligible: ${ticker} | Can open: ${canOpen}`);
